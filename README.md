@@ -48,7 +48,7 @@ check, no dispose hook registered) when it isn't installed.
 composer require kinetis/persistence
 ```
 
-Requires PHP 8.4+ and `kinetis/kinetis`. Full documentation:
+Requires PHP 8.4+ and `kinetis/framework`. Full documentation:
 [docs.kinetis.dev/persistence.html](https://docs.kinetis.dev/persistence.html).
 
 ## License

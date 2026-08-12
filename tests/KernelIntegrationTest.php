@@ -17,7 +17,7 @@ use PHPUnit\Framework\TestCase;
  * TransactionGuard wiring — the counterpart to core's own
  * KernelTest::test_handles_a_request_normally_when_the_persistence_package_is_not_installed().
  * Only this package has both Kernel and TransactionGuard simultaneously
- * available (it depends on kinetis/kinetis; core never depends the other
+ * available (it depends on kinetis/framework; core never depends the other
  * way), so this is the one place the real dispose-hook wiring can be
  * proven end-to-end.
  */

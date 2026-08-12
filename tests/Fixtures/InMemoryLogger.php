@@ -8,7 +8,7 @@ use Psr\Log\AbstractLogger;
 use Stringable;
 
 /**
- * Duplicated from kinetis/kinetis's own tests/Fixtures/InMemoryLogger.php
+ * Duplicated from kinetis/framework's own tests/Fixtures/InMemoryLogger.php
  * — a dependency's autoload-dev mapping is never available to a consumer
  * package regardless of path-repo vs. registry install, so this package's
  * own test suite needs its own copy rather than reaching into core's.
