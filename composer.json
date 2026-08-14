@@ -10,7 +10,7 @@
     ],
     "require": {
         "php": "^8.4",
-        "kinetis/framework": "dev-main",
+        "kinetis/framework": "^1.1",
         "amphp/sql": "^2",
         "amphp/mysql": "^3.1",
         "amphp/postgres": "^2.2"
@@ -35,12 +35,6 @@
             "Kinetis\\Persistence\\Tests\\": "tests/"
         }
     },
-    "repositories": [
-        {
-            "type": "path",
-            "url": "../framework"
-        }
-    ],
     "config": {
         "sort-packages": true,
         "allow-plugins": {
