@@ -189,4 +189,120 @@ final class SqlConnectionFactoryTest extends TestCase
         $this->expectExceptionMessage('maxConnections');
         new ConnectionOptions(maxConnections: 0);
     }
+    private static function property(object $object, string $name): mixed
+    {
+        return new \ReflectionProperty($object, $name)->getValue($object);
+    }
+
+    public function test_db_port_wins_and_dialect_defaults_apply_when_unset(): void
+    {
+        $withPort = SqlConnectionFactory::fromConfig(new Config([
+            'DB_CONNECTION' => 'mysql', 'DB_DRIVER' => 'native', 'DB_PASSWORD' => 's', 'DB_PORT' => '13306',
+        ]));
+        self::assertSame(13306, self::property($withPort, 'port'));
+
+        $mysqlDefault = SqlConnectionFactory::fromConfig(new Config([
+            'DB_CONNECTION' => 'mysql', 'DB_DRIVER' => 'native', 'DB_PASSWORD' => 's',
+        ]));
+        self::assertSame(3306, self::property($mysqlDefault, 'port'));
+
+        $pgDefault = SqlConnectionFactory::fromConfig(new Config([
+            'DB_CONNECTION' => 'pgsql', 'DB_DRIVER' => 'native', 'DB_PASSWORD' => 's',
+        ]));
+        self::assertSame(5432, self::property($pgDefault, 'port'));
+    }
+
+    public function test_discrete_option_keys_reach_the_driver(): void
+    {
+        $client = SqlConnectionFactory::fromConfig(new Config([
+            'DB_CONNECTION' => 'pgsql',
+            'DB_DRIVER' => 'native',
+            'DB_PASSWORD' => 's',
+            'DB_CHARSET' => 'UTF8',
+            'DB_SSLMODE' => 'require',
+            'DB_CONNECT_TIMEOUT' => '7',
+            'DB_APP_NAME' => 'myapp',
+        ]));
+
+        $options = self::property($client, 'options');
+        self::assertInstanceOf(ConnectionOptions::class, $options);
+        self::assertSame('UTF8', $options->charset);
+        self::assertSame('require', $options->sslMode);
+        self::assertSame(7, $options->connectTimeout);
+        self::assertSame('myapp', $options->applicationName);
+    }
+
+    public function test_a_discrete_key_wins_over_the_db_options_spelling(): void
+    {
+        $client = SqlConnectionFactory::fromConfig(new Config([
+            'DB_CONNECTION' => 'mysql',
+            'DB_DRIVER' => 'native',
+            'DB_PASSWORD' => 's',
+            'DB_CHARSET' => 'utf8mb4',
+            'DB_OPTIONS' => 'charset=latin1 compress=on',
+        ]));
+
+        $options = self::property($client, 'options');
+        self::assertInstanceOf(ConnectionOptions::class, $options);
+        self::assertSame('utf8mb4', $options->charset);
+        self::assertTrue($options->compression);
+    }
+
+    public function test_db_options_values_may_contain_equals_signs(): void
+    {
+        // explode('=', ..., 2): only the first "=" splits key from value.
+        $client = SqlConnectionFactory::fromConfig(new Config([
+            'DB_CONNECTION' => 'pgsql',
+            'DB_DRIVER' => 'native',
+            'DB_PASSWORD' => 's',
+            'DB_OPTIONS' => 'application_name=a=b',
+        ]));
+
+        $options = self::property($client, 'options');
+        self::assertInstanceOf(ConnectionOptions::class, $options);
+        self::assertSame('a=b', $options->applicationName);
+    }
+
+    public function test_a_bare_db_options_key_without_a_value_parses_as_an_empty_value(): void
+    {
+        // "compress" with no "=" means an empty value, which is falsy —
+        // not a parse error, and not silently treated as unknown.
+        $client = SqlConnectionFactory::fromConfig(new Config([
+            'DB_CONNECTION' => 'mysql',
+            'DB_DRIVER' => 'native',
+            'DB_PASSWORD' => 's',
+            'DB_OPTIONS' => 'compress',
+        ]));
+
+        $options = self::property($client, 'options');
+        self::assertInstanceOf(ConnectionOptions::class, $options);
+        self::assertFalse($options->compression);
+    }
+
+    public function test_compression_truthy_spellings_parse_to_true(): void
+    {
+        foreach (['1', 'true', 'on', 'yes'] as $spelling) {
+            $client = SqlConnectionFactory::fromConfig(new Config([
+                'DB_CONNECTION' => 'mysql',
+                'DB_DRIVER' => 'native',
+                'DB_PASSWORD' => 's',
+                'DB_COMPRESSION' => $spelling,
+            ]));
+
+            $options = self::property($client, 'options');
+            self::assertInstanceOf(ConnectionOptions::class, $options);
+            self::assertTrue($options->compression, "spelling: {$spelling}");
+        }
+    }
+
+    public function test_max_connections_pool_option_reaches_the_driver(): void
+    {
+        $client = SqlConnectionFactory::fromConfig(new Config([
+            'DB_CONNECTION' => 'mysql', 'DB_DRIVER' => 'native', 'DB_PASSWORD' => 's',
+        ]), poolOptions: ['maxConnections' => 3]);
+
+        $options = self::property($client, 'options');
+        self::assertInstanceOf(ConnectionOptions::class, $options);
+        self::assertSame(3, $options->maxConnections);
+    }
 }
