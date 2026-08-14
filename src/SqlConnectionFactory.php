@@ -100,8 +100,9 @@ final class SqlConnectionFactory
             );
         }
 
-        $port = $config->get(Config::scopedKey('DB_PORT', $connection));
-        $port = $port !== null ? (int) $port : ($dialect === 'mysql' ? 3306 : 5432);
+        $defaultPort = $dialect === 'mysql' ? 3306 : 5432;
+        $portValue = $config->get(Config::scopedKey('DB_PORT', $connection));
+        $port = $portValue !== null ? (int) $portValue : $defaultPort;
 
         $options = self::buildOptions($config, $connection, $poolOptions);
 

@@ -417,27 +417,18 @@ final class MysqliAsyncClient implements MysqlLink
     private function poll(): void
     {
         if ($this->pending === []) {
-            if ($this->pollTimerId !== null) {
-                EventLoop::disable($this->pollTimerId);
-            }
+            $this->disablePollTimerIfIdle();
 
             return;
         }
 
-        $links = [];
-
-        foreach ($this->pending as [, $connection]) {
-            $links[] = $connection;
-        }
-
+        $links = $this->pendingConnections();
         $read = $error = $reject = $links;
 
         try {
             $ready = \mysqli_poll($read, $error, $reject, 0, self::POLL_BLOCK_MICROSECONDS);
         } catch (mysqli_sql_exception $e) {
-            foreach ($links as $connection) {
-                $this->failPending($connection, new ConnectionException('mysqli_poll() failed: ' . $e->getMessage(), 0, $e));
-            }
+            $this->failAll($links, new ConnectionException('mysqli_poll() failed: ' . $e->getMessage(), 0, $e));
 
             return;
         }
@@ -458,6 +449,31 @@ final class MysqliAsyncClient implements MysqlLink
             $this->failPending($connection, new ConnectionException('mysqli_poll() rejected a connection with a pending query'));
         }
 
+        $this->disablePollTimerIfIdle();
+    }
+
+    /** @return list<mysqli> */
+    private function pendingConnections(): array
+    {
+        $links = [];
+
+        foreach ($this->pending as [, $connection]) {
+            $links[] = $connection;
+        }
+
+        return $links;
+    }
+
+    /** @param list<mysqli> $links */
+    private function failAll(array $links, Throwable $exception): void
+    {
+        foreach ($links as $connection) {
+            $this->failPending($connection, $exception);
+        }
+    }
+
+    private function disablePollTimerIfIdle(): void
+    {
         if ($this->pending === [] && $this->pollTimerId !== null) {
             EventLoop::disable($this->pollTimerId);
         }

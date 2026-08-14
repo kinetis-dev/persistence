@@ -292,9 +292,19 @@ final class PgsqlAsyncClient implements PostgresLink
 
         /** @var list<array<string, mixed>> $rows */
         $rows = \pg_fetch_all($result, \PGSQL_ASSOC);
+        $rows = self::applyConverters($rows, $this->buildColumnConverters($result, $fieldCount));
 
-        // pg returns every value as a string; convert the common numeric
-        // and boolean field types to native PHP types by column.
+        return new BufferedSqlResult($rows, \pg_num_rows($result), $fieldCount);
+    }
+
+    /**
+     * pg returns every value as a string; this maps each column to a
+     * converter back to its native PHP type, by field type.
+     *
+     * @return array<string, Closure(?string): (int|float|bool|null)>
+     */
+    private function buildColumnConverters(Result $result, int $fieldCount): array
+    {
         $converters = [];
 
         for ($i = 0; $i < $fieldCount; $i++) {
@@ -309,18 +319,24 @@ final class PgsqlAsyncClient implements PostgresLink
             };
         }
 
-        $converters = \array_filter($converters);
+        return \array_filter($converters);
+    }
 
-        if ($converters !== []) {
-            foreach ($rows as &$row) {
-                foreach ($converters as $column => $convert) {
-                    $row[$column] = $convert($row[$column]);
-                }
+    /**
+     * @param list<array<string, mixed>> $rows
+     * @param array<string, Closure(?string): (int|float|bool|null)> $converters
+     * @return list<array<string, mixed>>
+     */
+    private static function applyConverters(array $rows, array $converters): array
+    {
+        foreach ($rows as &$row) {
+            foreach ($converters as $column => $convert) {
+                $row[$column] = $convert($row[$column]);
             }
-            unset($row);
         }
+        unset($row);
 
-        return new BufferedSqlResult($rows, \pg_num_rows($result), $fieldCount);
+        return $rows;
     }
 
     private function acquire(): PgsqlAsyncConnection

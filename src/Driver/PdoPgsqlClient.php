@@ -58,6 +58,13 @@ final class PdoPgsqlClient implements PostgresLink
         );
     }
 
+    /**
+     * Called only from {@see PdoExecutionTrait} (via its own
+     * `abstract private function connection(): PDO;`), never directly
+     * from this class's own body — static analysis that doesn't resolve
+     * trait method calls across the trait boundary will see this as
+     * unused; it isn't.
+     */
     private function connection(): PDO
     {
         if ($this->closed) {
