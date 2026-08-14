@@ -23,7 +23,10 @@
         "vimeo/psalm": "^6.16"
     },
     "suggest": {
-        "ext-pgsql": "Needed by amphp/postgres to actually connect — amphp/mysql is a pure-PHP wire-protocol client and needs no extension, but amphp/postgres wraps a real Postgres client library. pecl-pq is the alternative. Not hard-required here for the same reason amphp/postgres itself doesn't hard-require it: forcing this on MySQL-only or Postgres-less deployments would be overly restrictive."
+        "ext-mysqli": "Needed by the native MySQL driver (Kinetis\\Persistence\\Driver\\MysqliAsyncClient) — the default under FrankenPHP worker mode via DB_DRIVER=auto.",
+        "ext-pgsql": "Needed by the native Postgres driver (Kinetis\\Persistence\\Driver\\PgsqlAsyncClient — the default under FrankenPHP worker mode via DB_DRIVER=auto) and by amphp/postgres.",
+        "ext-pdo_mysql": "Needed by the PDO MySQL driver (Kinetis\\Persistence\\Driver\\PdoMysqlClient) — the default under PHP-FPM via DB_DRIVER=auto.",
+        "ext-pdo_pgsql": "Needed by the PDO Postgres driver (Kinetis\\Persistence\\Driver\\PdoPgsqlClient) — the default under PHP-FPM via DB_DRIVER=auto."
     },
     "autoload": {
         "psr-4": {

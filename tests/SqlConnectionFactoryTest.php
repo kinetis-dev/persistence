@@ -9,6 +9,7 @@ use Amp\Postgres\PostgresConnectionPool;
 use InvalidArgumentException;
 use Kinetis\Config\Config;
 use Kinetis\Config\Exception\MissingConfigException;
+use Kinetis\Persistence\Driver;
 use Kinetis\Persistence\SqlConnectionFactory;
 use PHPUnit\Framework\TestCase;
 
@@ -18,6 +19,7 @@ final class SqlConnectionFactoryTest extends TestCase
     {
         $config = new Config([
             'DB_CONNECTION' => 'mysql',
+            'DB_DRIVER' => 'amphp',
             'DB_HOST' => 'db.internal',
             'DB_NAME' => 'app',
             'DB_USER' => 'app',
@@ -31,6 +33,7 @@ final class SqlConnectionFactoryTest extends TestCase
     {
         $config = new Config([
             'DB_CONNECTION' => 'pgsql',
+            'DB_DRIVER' => 'amphp',
             'DB_HOST' => 'db.internal',
             'DB_NAME' => 'app',
             'DB_USER' => 'app',
@@ -44,9 +47,11 @@ final class SqlConnectionFactoryTest extends TestCase
     {
         $config = new Config([
             'DB_CONNECTION' => 'mysql',
+            'DB_DRIVER' => 'amphp',
             'DB_HOST' => 'default.internal',
             'DB_PASSWORD' => 'default-secret',
             'DB_DB2_CONNECTION' => 'pgsql',
+            'DB_DB2_DRIVER' => 'amphp',
             'DB_DB2_HOST' => 'db2.internal',
             'DB_DB2_PASSWORD' => 'db2-secret',
         ]);
@@ -86,6 +91,7 @@ final class SqlConnectionFactoryTest extends TestCase
     {
         $config = new Config([
             'DB_CONNECTION' => 'mysql',
+            'DB_DRIVER' => 'amphp',
             'DB_HOST' => 'db.internal',
             'DB_PASSWORD' => 'secret',
             'DB_OPTIONS' => 'charset=latin1 compress=on',
@@ -101,6 +107,7 @@ final class SqlConnectionFactoryTest extends TestCase
     {
         $config = new Config([
             'DB_CONNECTION' => 'pgsql',
+            'DB_DRIVER' => 'amphp',
             'DB_HOST' => 'db.internal',
             'DB_PASSWORD' => 'secret',
             'DB_OPTIONS' => 'sslmode=require applicationName=tfbench',
@@ -116,10 +123,12 @@ final class SqlConnectionFactoryTest extends TestCase
     {
         $config = new Config([
             'DB_CONNECTION' => 'mysql',
+            'DB_DRIVER' => 'amphp',
             'DB_HOST' => 'default.internal',
             'DB_PASSWORD' => 'default-secret',
             'DB_OPTIONS' => 'charset=latin1',
             'DB_DB2_CONNECTION' => 'mysql',
+            'DB_DB2_DRIVER' => 'amphp',
             'DB_DB2_HOST' => 'db2.internal',
             'DB_DB2_PASSWORD' => 'db2-secret',
             'DB_DB2_OPTIONS' => 'charset=ascii',
@@ -137,6 +146,7 @@ final class SqlConnectionFactoryTest extends TestCase
     {
         $config = new Config([
             'DB_CONNECTION' => 'mysql',
+            'DB_DRIVER' => 'amphp',
             'DB_HOST' => 'db.internal',
             'DB_PASSWORD' => 'secret',
         ]);
@@ -150,6 +160,7 @@ final class SqlConnectionFactoryTest extends TestCase
     {
         $config = new Config([
             'DB_CONNECTION' => 'mysql',
+            'DB_DRIVER' => 'amphp',
             'DB_HOST' => 'db.internal',
             'DB_PASSWORD' => 'secret',
         ]);
@@ -164,6 +175,7 @@ final class SqlConnectionFactoryTest extends TestCase
     {
         $config = new Config([
             'DB_CONNECTION' => 'pgsql',
+            'DB_DRIVER' => 'amphp',
             'DB_HOST' => 'db.internal',
             'DB_PASSWORD' => 'secret',
         ]);
@@ -177,6 +189,7 @@ final class SqlConnectionFactoryTest extends TestCase
     {
         $config = new Config([
             'DB_CONNECTION' => 'mysql',
+            'DB_DRIVER' => 'amphp',
             'DB_HOST' => 'db.internal',
             'DB_PASSWORD' => 'secret',
         ]);
@@ -190,6 +203,7 @@ final class SqlConnectionFactoryTest extends TestCase
     {
         $config = new Config([
             'DB_CONNECTION' => 'mysql',
+            'DB_DRIVER' => 'amphp',
             'DB_HOST' => 'db.internal',
             'DB_PASSWORD' => 'secret',
         ]);
@@ -199,5 +213,76 @@ final class SqlConnectionFactoryTest extends TestCase
         // rejects it directly, no Kinetis-specific validation involved.
         $this->expectException(\Error::class);
         SqlConnectionFactory::fromConfig($config, poolOptions: ['resetConnections' => false]);
+    }
+    public function test_auto_driver_selects_pdo_outside_a_persistent_runtime(): void
+    {
+        $config = new Config([
+            'DB_CONNECTION' => 'mysql',
+            'DB_PASSWORD' => 'secret',
+        ]);
+
+        // The test process is not a FrankenPHP worker, so 'auto' must fall back to PDO.
+        self::assertInstanceOf(Driver\PdoMysqlClient::class, SqlConnectionFactory::fromConfig($config));
+    }
+
+    public function test_native_driver_builds_the_mysqli_async_client(): void
+    {
+        $config = new Config([
+            'DB_CONNECTION' => 'mysql',
+            'DB_DRIVER' => 'native',
+            'DB_PASSWORD' => 'secret',
+        ]);
+
+        self::assertInstanceOf(Driver\MysqliAsyncClient::class, SqlConnectionFactory::fromConfig($config));
+    }
+
+    public function test_native_driver_builds_the_pgsql_async_client(): void
+    {
+        $config = new Config([
+            'DB_CONNECTION' => 'pgsql',
+            'DB_DRIVER' => 'native',
+            'DB_PASSWORD' => 'secret',
+        ]);
+
+        self::assertInstanceOf(Driver\PgsqlAsyncClient::class, SqlConnectionFactory::fromConfig($config));
+    }
+
+    public function test_pdo_driver_builds_the_pdo_pgsql_client(): void
+    {
+        $config = new Config([
+            'DB_CONNECTION' => 'pgsql',
+            'DB_DRIVER' => 'pdo',
+            'DB_PASSWORD' => 'secret',
+        ]);
+
+        self::assertInstanceOf(Driver\PdoPgsqlClient::class, SqlConnectionFactory::fromConfig($config));
+    }
+
+    public function test_driver_selection_is_scoped_per_named_connection(): void
+    {
+        $config = new Config([
+            'DB_CONNECTION' => 'mysql',
+            'DB_DRIVER' => 'pdo',
+            'DB_PASSWORD' => 'secret',
+            'DB_DB2_CONNECTION' => 'mysql',
+            'DB_DB2_DRIVER' => 'native',
+            'DB_DB2_PASSWORD' => 'secret',
+        ]);
+
+        self::assertInstanceOf(Driver\PdoMysqlClient::class, SqlConnectionFactory::fromConfig($config));
+        self::assertInstanceOf(Driver\MysqliAsyncClient::class, SqlConnectionFactory::fromConfig($config, 'db2'));
+    }
+
+    public function test_throws_when_the_driver_is_unknown(): void
+    {
+        $config = new Config([
+            'DB_CONNECTION' => 'mysql',
+            'DB_DRIVER' => 'odbc',
+            'DB_PASSWORD' => 'secret',
+        ]);
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('DB_DRIVER must be "auto", "native", "pdo", or "amphp", got "odbc".');
+        SqlConnectionFactory::fromConfig($config);
     }
 }
