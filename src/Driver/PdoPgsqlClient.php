@@ -7,9 +7,7 @@ namespace Kinetis\Persistence\Driver;
 use Kinetis\Persistence\ConnectionOptions;
 use Kinetis\Persistence\Contract\PostgresLink;
 use Kinetis\Persistence\Contract\PostgresTransaction;
-use Kinetis\Persistence\Contract\SqlResult;
 use Kinetis\Persistence\Exception\ConnectionException;
-use Kinetis\Persistence\Exception\QueryException;
 use PDO;
 use PDOException;
 use PDOStatement;
@@ -25,11 +23,9 @@ use PDOStatement;
  */
 final class PdoPgsqlClient implements PostgresLink
 {
+    use PdoExecutionTrait;
+
     private readonly ConnectionOptions $options;
-
-    private ?PDO $pdo = null;
-
-    private bool $closed = false;
 
     public function __construct(
         private readonly string $host,
@@ -44,61 +40,12 @@ final class PdoPgsqlClient implements PostgresLink
         $this->options->rejectUnsupported('PDO pgsql', ['collation', 'compression']);
     }
 
-    public function query(string $sql): SqlResult
-    {
-        try {
-            $statement = $this->connection()->query($sql);
-
-            if ($statement === false) {
-                throw new QueryException('Query failed', $sql);
-            }
-        } catch (PDOException $e) {
-            throw new QueryException($e->getMessage(), $sql, $e);
-        }
-
-        return $this->buildResult($statement);
-    }
-
-    public function execute(string $sql, array $params = []): SqlResult
-    {
-        try {
-            $statement = $this->connection()->prepare($sql);
-
-            if ($statement === false) {
-                throw new QueryException('Failed to prepare query', $sql);
-            }
-
-            $statement->execute(\array_values($params));
-        } catch (PDOException $e) {
-            throw new QueryException($e->getMessage(), $sql, $e);
-        }
-
-        return $this->buildResult($statement);
-    }
-
     public function beginTransaction(): PostgresTransaction
     {
-        try {
-            $this->connection()->beginTransaction();
-        } catch (PDOException $e) {
-            throw new QueryException('Failed to begin transaction: ' . $e->getMessage(), '', $e);
-        }
-
-        return new PdoPgsqlTransaction($this, $this->connection());
+        return new PdoPgsqlTransaction($this->beginPdoTransaction(), $this->buildResult(...));
     }
 
-    public function close(): void
-    {
-        $this->closed = true;
-        $this->pdo = null;
-    }
-
-    public function isClosed(): bool
-    {
-        return $this->closed;
-    }
-
-    /** @internal Used by {@see PdoPgsqlTransaction}. */
+    /** @internal Also used by {@see PdoPgsqlTransaction} via closure. */
     public function buildResult(PDOStatement $statement): BufferedSqlResult
     {
         /** @var list<array<string, mixed>> $rows */

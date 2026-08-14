@@ -7,22 +7,16 @@ namespace Kinetis\Persistence\Driver;
 use Closure;
 use Kinetis\Persistence\Contract\MysqlTransaction;
 use Kinetis\Persistence\Contract\SqlResult;
-use Kinetis\Persistence\Contract\SqlTransaction;
-use Kinetis\Persistence\Exception\TransactionException;
 use mysqli;
-use Throwable;
 
 /**
  * A transaction on {@see MysqliAsyncClient}: pins one connection from the
  * client's pool for its whole lifetime (START TRANSACTION already ran on
  * it), routes query()/execute() to that connection, and hands the
- * connection back on commit/rollback/close. Nested transactions are not
- * supported.
+ * connection back on commit/rollback/close.
  */
-final class MysqliAsyncTransaction implements MysqlTransaction
+final class MysqliAsyncTransaction extends AbstractTransaction implements MysqlTransaction
 {
-    private bool $active = true;
-
     /**
      * @param Closure(mysqli): void $releaseConnection
      */
@@ -32,68 +26,27 @@ final class MysqliAsyncTransaction implements MysqlTransaction
         private readonly Closure $releaseConnection,
     ) {}
 
-    public function query(string $sql): SqlResult
+    protected function run(string $sql): SqlResult
     {
-        $this->assertActive();
-
         return $this->client->queryOn($this->connection, $sql);
     }
 
-    public function execute(string $sql, array $params = []): SqlResult
+    protected function runWithParams(string $sql, array $params): SqlResult
     {
-        $this->assertActive();
-
         return $this->client->executeOn($this->connection, $sql, $params);
     }
 
-    public function beginTransaction(): SqlTransaction
+    protected function finish(bool $commit): void
     {
-        throw new TransactionException('Nested transactions are not supported by the native mysqli driver');
-    }
-
-    public function commit(): void
-    {
-        $this->finish('COMMIT');
-    }
-
-    public function rollback(): void
-    {
-        $this->finish('ROLLBACK');
-    }
-
-    public function isActive(): bool
-    {
-        return $this->active;
-    }
-
-    public function close(): void
-    {
-        if ($this->active) {
-            $this->rollback();
-        }
-    }
-
-    public function isClosed(): bool
-    {
-        return !$this->active;
-    }
-
-    private function finish(string $sql): void
-    {
-        $this->assertActive();
-        $this->active = false;
-
         try {
-            $this->client->queryOn($this->connection, $sql);
+            $this->client->queryOn($this->connection, $commit ? 'COMMIT' : 'ROLLBACK');
         } finally {
             ($this->releaseConnection)($this->connection);
         }
     }
 
-    private function assertActive(): void
+    protected function driverLabel(): string
     {
-        if (!$this->active) {
-            throw new TransactionException('The transaction has already been committed or rolled back');
-        }
+        return 'the native mysqli driver';
     }
 }
