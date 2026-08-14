@@ -81,4 +81,123 @@ final class SqlConnectionFactoryTest extends TestCase
         $this->expectExceptionMessage('DB_CONNECTION must be "mysql" or "pgsql".');
         SqlConnectionFactory::fromConfig($config);
     }
+
+    public function test_db_options_are_appended_to_the_mysql_connection_string(): void
+    {
+        $config = new Config([
+            'DB_CONNECTION' => 'mysql',
+            'DB_HOST' => 'db.internal',
+            'DB_PASSWORD' => 'secret',
+            'DB_OPTIONS' => 'charset=latin1 compress=on',
+        ]);
+
+        $pool = SqlConnectionFactory::fromConfig($config);
+        self::assertInstanceOf(MysqlConnectionPool::class, $pool);
+        self::assertSame('latin1', $pool->getConfig()->getCharset());
+        self::assertTrue($pool->getConfig()->isCompressionEnabled());
+    }
+
+    public function test_db_options_are_appended_to_the_postgres_connection_string(): void
+    {
+        $config = new Config([
+            'DB_CONNECTION' => 'pgsql',
+            'DB_HOST' => 'db.internal',
+            'DB_PASSWORD' => 'secret',
+            'DB_OPTIONS' => 'sslmode=require applicationName=tfbench',
+        ]);
+
+        $pool = SqlConnectionFactory::fromConfig($config);
+        self::assertInstanceOf(PostgresConnectionPool::class, $pool);
+        self::assertSame('require', $pool->getConfig()->getSslMode());
+        self::assertSame('tfbench', $pool->getConfig()->getApplicationName());
+    }
+
+    public function test_db_options_are_scoped_per_named_connection(): void
+    {
+        $config = new Config([
+            'DB_CONNECTION' => 'mysql',
+            'DB_HOST' => 'default.internal',
+            'DB_PASSWORD' => 'default-secret',
+            'DB_OPTIONS' => 'charset=latin1',
+            'DB_DB2_CONNECTION' => 'mysql',
+            'DB_DB2_HOST' => 'db2.internal',
+            'DB_DB2_PASSWORD' => 'db2-secret',
+            'DB_DB2_OPTIONS' => 'charset=ascii',
+        ]);
+
+        $default = SqlConnectionFactory::fromConfig($config);
+        $named = SqlConnectionFactory::fromConfig($config, 'db2');
+        self::assertInstanceOf(MysqlConnectionPool::class, $default);
+        self::assertInstanceOf(MysqlConnectionPool::class, $named);
+        self::assertSame('latin1', $default->getConfig()->getCharset());
+        self::assertSame('ascii', $named->getConfig()->getCharset());
+    }
+
+    public function test_db_options_default_to_absent_leaving_amphps_own_defaults_in_place(): void
+    {
+        $config = new Config([
+            'DB_CONNECTION' => 'mysql',
+            'DB_HOST' => 'db.internal',
+            'DB_PASSWORD' => 'secret',
+        ]);
+
+        $pool = SqlConnectionFactory::fromConfig($config);
+        self::assertInstanceOf(MysqlConnectionPool::class, $pool);
+        self::assertSame('utf8mb4', $pool->getConfig()->getCharset());
+    }
+
+    public function test_pool_options_are_passed_through_for_mysql(): void
+    {
+        $config = new Config([
+            'DB_CONNECTION' => 'mysql',
+            'DB_HOST' => 'db.internal',
+            'DB_PASSWORD' => 'secret',
+        ]);
+
+        $pool = SqlConnectionFactory::fromConfig($config, poolOptions: ['maxConnections' => 256, 'idleTimeout' => 30]);
+        self::assertInstanceOf(MysqlConnectionPool::class, $pool);
+        self::assertSame(256, $pool->getConnectionLimit());
+        self::assertSame(30, $pool->getIdleTimeout());
+    }
+
+    public function test_pool_options_are_passed_through_for_postgres(): void
+    {
+        $config = new Config([
+            'DB_CONNECTION' => 'pgsql',
+            'DB_HOST' => 'db.internal',
+            'DB_PASSWORD' => 'secret',
+        ]);
+
+        $pool = SqlConnectionFactory::fromConfig($config, poolOptions: ['maxConnections' => 128]);
+        self::assertInstanceOf(PostgresConnectionPool::class, $pool);
+        self::assertSame(128, $pool->getConnectionLimit());
+    }
+
+    public function test_pool_options_default_to_amphps_own_default_pool_size(): void
+    {
+        $config = new Config([
+            'DB_CONNECTION' => 'mysql',
+            'DB_HOST' => 'db.internal',
+            'DB_PASSWORD' => 'secret',
+        ]);
+
+        $pool = SqlConnectionFactory::fromConfig($config);
+        self::assertInstanceOf(MysqlConnectionPool::class, $pool);
+        self::assertSame(100, $pool->getConnectionLimit());
+    }
+
+    public function test_a_pool_option_valid_only_for_the_other_dialect_throws(): void
+    {
+        $config = new Config([
+            'DB_CONNECTION' => 'mysql',
+            'DB_HOST' => 'db.internal',
+            'DB_PASSWORD' => 'secret',
+        ]);
+
+        // resetConnections exists on PostgresConnectionPool's own constructor,
+        // not MysqlConnectionPool's — PHP's own named-argument enforcement
+        // rejects it directly, no Kinetis-specific validation involved.
+        $this->expectException(\Error::class);
+        SqlConnectionFactory::fromConfig($config, poolOptions: ['resetConnections' => false]);
+    }
 }
