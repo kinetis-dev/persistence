@@ -23,35 +23,29 @@ use Kinetis\Config\Config;
  * type; retrieve it from the container explicitly (or construct it
  * directly) wherever it's needed.
  *
- * Two independent, deliberately separate extension points, since they
- * apply at two different layers of amphp's own API and can't be merged
- * into one mechanism:
+ * Two independent extension points, since they apply at two different
+ * layers of amphp's own API and can't be merged into one mechanism:
  *
  * - `DB_OPTIONS` (also connection-scoped via Config::scopedKey()) is
  *   appended verbatim to the connection string handed to
  *   MysqlConfig::fromString()/PostgresConfig::fromString() — e.g.
  *   "charset=latin1 collate=latin1_swedish_ci" for MySQL, or
  *   "sslmode=require application_name=myapp" for Postgres. This is
- *   genuinely dialect-specific: each Config class's own KEY_MAP only
- *   recognizes its own keys (confirmed by reading both directly) and
- *   silently ignores anything it doesn't — so a key meant for the other
- *   dialect just does nothing rather than erroring, the caller's own
- *   responsibility to get right for whichever dialect they're actually
- *   using.
+ *   genuinely dialect-specific: each Config class's own key map only
+ *   recognizes its own keys and silently ignores anything it doesn't —
+ *   so a key meant for the other dialect just does nothing rather than
+ *   erroring, the caller's own responsibility to get right for whichever
+ *   dialect they're actually using.
  * - $poolOptions is spread as named arguments into whichever pool
  *   constructor gets used (`maxConnections`, `idleTimeout`,
  *   `transactionIsolation`, `connector`, and — Postgres only —
- *   `resetConnections`; confirmed by reading both constructors directly,
- *   they genuinely diverge). This is a pool-level concern
+ *   `resetConnections`). This is a pool-level concern
  *   (MysqlConnectionPool/PostgresConnectionPool's own constructor, never
  *   part of the connection string) — DB_OPTIONS can't reach it no matter
  *   what's put in the string, since neither Config class's own
  *   `fromString()` reads a pool-sizing key at all. A key valid for one
- *   dialect but not the other throws PHP's own "Unknown named parameter"
- *   TypeError at construction — the same "let PHP's own argument
- *   enforcement reject what's invalid" approach already used for `Query`'s
- *   MysqlLink|PostgresLink typing elsewhere in this codebase, not a new
- *   exception type.
+ *   dialect's pool but not the other's throws PHP's own "Unknown named
+ *   parameter" error at construction.
  */
 final class SqlConnectionFactory
 {
