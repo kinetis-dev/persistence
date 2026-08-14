@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Kinetis\Persistence\Driver;
 
-use Amp\Sql\SqlQueryError;
+use Kinetis\Persistence\Exception\QueryException;
 use Closure;
 
 /**
@@ -60,7 +60,7 @@ final class SqlParamInterpolator
 
             if ($char === '?') {
                 if (!\array_key_exists($paramIndex, $params)) {
-                    throw new SqlQueryError('Query has more "?" placeholders than parameters');
+                    throw new QueryException('Query has more "?" placeholders than parameters');
                 }
 
                 $out .= $encode($params[$paramIndex], $paramIndex);
@@ -72,7 +72,7 @@ final class SqlParamInterpolator
         }
 
         if ($paramIndex !== \count($params)) {
-            throw new SqlQueryError(\sprintf(
+            throw new QueryException(\sprintf(
                 'Query has %d "?" placeholders but %d parameters were given',
                 $paramIndex,
                 \count($params),

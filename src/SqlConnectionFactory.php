@@ -4,14 +4,10 @@ declare(strict_types=1);
 
 namespace Kinetis\Persistence;
 
-use Amp\Mysql\MysqlConfig;
-use Amp\Mysql\MysqlConnectionPool;
-use Amp\Mysql\MysqlLink;
-use Amp\Postgres\PostgresConfig;
-use Amp\Postgres\PostgresConnectionPool;
-use Amp\Postgres\PostgresLink;
 use InvalidArgumentException;
 use Kinetis\Config\Config;
+use Kinetis\Persistence\Contract\MysqlLink;
+use Kinetis\Persistence\Contract\PostgresLink;
 use Kinetis\Persistence\Driver\MysqliAsyncClient;
 use Kinetis\Persistence\Driver\PdoMysqlClient;
 use Kinetis\Persistence\Driver\PdoPgsqlClient;
@@ -19,40 +15,62 @@ use Kinetis\Persistence\Driver\PgsqlAsyncClient;
 
 /**
  * Builds a database client from Config, choosing the driver that fits
- * the runtime — every client implements amphp's MysqlLink/PostgresLink,
- * so TransactionGuard, the query builder, and application code are
- * driver-agnostic.
+ * the runtime — every client implements the Kinetis-owned
+ * {@see MysqlLink}/{@see PostgresLink} contracts, so TransactionGuard,
+ * the query builder, and application code are driver-agnostic.
  *
  * Driver selection (`DB_DRIVER`, connection-scoped like every other
  * DB_* key):
  *
  * - `auto` (the default): a persistent runtime (FrankenPHP worker mode)
  *   gets the native async driver; a boot-and-die runtime (PHP-FPM) gets
- *   PDO. This split is measured, not aesthetic: per-request handshakes
- *   and per-query CPU dominate under boot-and-die, where an async
- *   client's overlap buys nothing a blocking driver doesn't already
- *   deliver — while a persistent worker amortizes connections across
- *   requests and genuinely benefits from native async fan-out.
+ *   PDO. This split is measured, not aesthetic: under boot-and-die,
+ *   per-request handshakes and per-query client CPU dominate, and an
+ *   async client's overlap buys nothing a blocking driver doesn't
+ *   already deliver — while a persistent worker amortizes connections
+ *   across requests and genuinely benefits from native async fan-out.
  * - `native`: mysqli's MYSQLI_ASYNC ({@see MysqliAsyncClient}) or
  *   ext-pgsql's pg_send_query ({@see PgsqlAsyncClient}). C-speed wire
  *   protocol, Fiber-suspending, `concurrently()`-compatible.
  * - `pdo`: one blocking PDO connection ({@see PdoMysqlClient}/
  *   {@see PdoPgsqlClient}).
- * - `amphp`: the original pure-PHP amphp/mysql/amphp/postgres pools —
- *   still the only driver offering server-side prepared statement
- *   objects (prepare()) and row streaming.
+ *
+ * Connection options are canonical and driver-neutral — see
+ * {@see ConnectionOptions}. They come from discrete, connection-scoped
+ * keys (`DB_CHARSET`, `DB_COLLATION`, `DB_SSLMODE`,
+ * `DB_CONNECT_TIMEOUT`, `DB_APP_NAME`, `DB_COMPRESSION`), each driver
+ * translating them to its native mechanism, and rejecting — loudly, at
+ * construction — any option it cannot honor.
+ *
+ * The legacy `DB_OPTIONS` string is still accepted as a migration path:
+ * key=value pairs whose keys have canonical equivalents are translated
+ * (a discrete key wins over a DB_OPTIONS spelling of the same option);
+ * anything untranslatable is passed through raw only to drivers whose
+ * backend natively accepts free-form connection-string keys (libpq),
+ * and rejected everywhere else.
  *
  * $connection selects a named connection via Config::scopedKey() —
  * 'default' reads the plain DB_* keys; any other name reads DB_{NAME}_*.
  *
- * `DB_OPTIONS` and $poolOptions keep their amphp semantics; for the
- * native drivers only $poolOptions['maxConnections'] applies (fan-out
- * width), and for PDO no pool option applies at all — both silently
- * accept and ignore what they can't use, so one bootstrap works
- * unchanged across runtimes.
+ * $poolOptions['maxConnections'] caps the async drivers' fan-out width
+ * (the PDO drivers are a single connection, trivially within any cap).
  */
 final class SqlConnectionFactory
 {
+    /** Legacy DB_OPTIONS keys with canonical equivalents, in every historical spelling. */
+    private const array LEGACY_KEY_MAP = [
+        'charset' => 'charset',
+        'client_encoding' => 'charset',
+        'collate' => 'collation',
+        'collation' => 'collation',
+        'sslmode' => 'sslMode',
+        'connect_timeout' => 'connectTimeout',
+        'application_name' => 'applicationName',
+        'applicationname' => 'applicationName',
+        'compress' => 'compression',
+        'compression' => 'compression',
+    ];
+
     /**
      * @param array<string, mixed> $poolOptions
      */
@@ -76,59 +94,67 @@ final class SqlConnectionFactory
             $driver = \function_exists('frankenphp_handle_request') ? 'native' : 'pdo';
         }
 
+        if ($driver !== 'native' && $driver !== 'pdo') {
+            throw new InvalidArgumentException(
+                Config::scopedKey('DB_DRIVER', $connection) . " must be \"auto\", \"native\", or \"pdo\", got \"{$driver}\".",
+            );
+        }
+
         $port = $config->get(Config::scopedKey('DB_PORT', $connection));
         $port = $port !== null ? (int) $port : ($dialect === 'mysql' ? 3306 : 5432);
 
-        /** @var int $maxConnections */
-        $maxConnections = $poolOptions['maxConnections'] ?? 8;
+        $options = self::buildOptions($config, $connection, $poolOptions);
 
-        return match ($driver) {
-            'native' => $dialect === 'mysql'
-                ? new MysqliAsyncClient($host, $user, $password, $database, $port, $maxConnections)
-                : new PgsqlAsyncClient($host, $user, $password, $database, $port, $maxConnections),
-            'pdo' => $dialect === 'mysql'
-                ? new PdoMysqlClient($host, $user, $password, $database, $port)
-                : new PdoPgsqlClient($host, $user, $password, $database, $port),
-            'amphp' => self::amphpPool($config, $connection, $dialect, $host, $database, $user, $password, $poolOptions),
-            default => throw new InvalidArgumentException(
-                Config::scopedKey('DB_DRIVER', $connection) . " must be \"auto\", \"native\", \"pdo\", or \"amphp\", got \"{$driver}\".",
-            ),
+        return match (true) {
+            $dialect === 'mysql' && $driver === 'native' => new MysqliAsyncClient($host, $user, $password, $database, $port, $options),
+            $dialect === 'mysql' => new PdoMysqlClient($host, $user, $password, $database, $port, $options),
+            $driver === 'native' => new PgsqlAsyncClient($host, $user, $password, $database, $port, $options),
+            default => new PdoPgsqlClient($host, $user, $password, $database, $port, $options),
         };
     }
 
     /**
-     * The original amphp pool construction, unchanged: connection string
-     * assembly plus DB_OPTIONS plus $poolOptions spread as named
-     * arguments into the pool constructor.
-     *
      * @param array<string, mixed> $poolOptions
      */
-    private static function amphpPool(
-        Config $config,
-        string $connection,
-        string $dialect,
-        string $host,
-        string $database,
-        string $user,
-        #[\SensitiveParameter] string $password,
-        array $poolOptions,
-    ): MysqlConnectionPool|PostgresConnectionPool {
-        $connectionString = "host={$host} dbname={$database} user={$user} password={$password}";
+    private static function buildOptions(Config $config, string $connection, array $poolOptions): ConnectionOptions
+    {
+        // Legacy DB_OPTIONS: translate what has a canonical equivalent,
+        // keep the rest for backends that accept free-form keys.
+        $legacy = [];
+        $extra = [];
+        $legacyString = $config->get(Config::scopedKey('DB_OPTIONS', $connection));
 
-        $port = $config->get(Config::scopedKey('DB_PORT', $connection));
+        foreach (\preg_split('/\s+/', $legacyString ?? '', flags: \PREG_SPLIT_NO_EMPTY) ?: [] as $pair) {
+            [$key, $value] = \array_pad(\explode('=', $pair, 2), 2, '');
+            $canonical = self::LEGACY_KEY_MAP[\strtolower($key)] ?? null;
 
-        if ($port !== null) {
-            $connectionString .= " port={$port}";
+            if ($canonical !== null) {
+                $legacy[$canonical] = $value;
+            } else {
+                $extra[] = $pair;
+            }
         }
 
-        $options = $config->get(Config::scopedKey('DB_OPTIONS', $connection));
+        $compression = $config->get(Config::scopedKey('DB_COMPRESSION', $connection))
+            ?? $legacy['compression']
+            ?? null;
 
-        if ($options !== null) {
-            $connectionString .= " {$options}";
-        }
+        $connectTimeout = $config->get(Config::scopedKey('DB_CONNECT_TIMEOUT', $connection))
+            ?? $legacy['connectTimeout']
+            ?? null;
 
-        return $dialect === 'mysql'
-            ? new MysqlConnectionPool(MysqlConfig::fromString($connectionString), ...$poolOptions)
-            : new PostgresConnectionPool(PostgresConfig::fromString($connectionString), ...$poolOptions);
+        /** @var int $maxConnections */
+        $maxConnections = $poolOptions['maxConnections'] ?? 8;
+
+        return new ConnectionOptions(
+            charset: $config->get(Config::scopedKey('DB_CHARSET', $connection)) ?? $legacy['charset'] ?? null,
+            collation: $config->get(Config::scopedKey('DB_COLLATION', $connection)) ?? $legacy['collation'] ?? null,
+            sslMode: $config->get(Config::scopedKey('DB_SSLMODE', $connection)) ?? $legacy['sslMode'] ?? null,
+            connectTimeout: $connectTimeout !== null ? (int) $connectTimeout : null,
+            applicationName: $config->get(Config::scopedKey('DB_APP_NAME', $connection)) ?? $legacy['applicationName'] ?? null,
+            compression: $compression !== null ? \in_array(\strtolower((string) $compression), ['1', 'true', 'on', 'yes'], true) : null,
+            maxConnections: $maxConnections,
+            extraConnectionString: \implode(' ', $extra),
+        );
     }
 }

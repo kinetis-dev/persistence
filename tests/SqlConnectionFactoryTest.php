@@ -4,60 +4,76 @@ declare(strict_types=1);
 
 namespace Kinetis\Persistence\Tests;
 
-use Amp\Mysql\MysqlConnectionPool;
-use Amp\Postgres\PostgresConnectionPool;
 use InvalidArgumentException;
 use Kinetis\Config\Config;
 use Kinetis\Config\Exception\MissingConfigException;
-use Kinetis\Persistence\Driver;
+use Kinetis\Persistence\ConnectionOptions;
+use Kinetis\Persistence\Driver\MysqliAsyncClient;
+use Kinetis\Persistence\Driver\PdoMysqlClient;
+use Kinetis\Persistence\Driver\PdoPgsqlClient;
+use Kinetis\Persistence\Driver\PgsqlAsyncClient;
 use Kinetis\Persistence\SqlConnectionFactory;
 use PHPUnit\Framework\TestCase;
 
 final class SqlConnectionFactoryTest extends TestCase
 {
-    public function test_builds_a_mysql_pool_from_the_default_connections_keys(): void
+    public function test_auto_driver_selects_pdo_outside_a_persistent_runtime(): void
     {
+        // The test process is not a FrankenPHP worker, so 'auto' must fall back to PDO.
         $config = new Config([
             'DB_CONNECTION' => 'mysql',
-            'DB_DRIVER' => 'amphp',
-            'DB_HOST' => 'db.internal',
-            'DB_NAME' => 'app',
-            'DB_USER' => 'app',
             'DB_PASSWORD' => 'secret',
         ]);
 
-        self::assertInstanceOf(MysqlConnectionPool::class, SqlConnectionFactory::fromConfig($config));
+        self::assertInstanceOf(PdoMysqlClient::class, SqlConnectionFactory::fromConfig($config));
     }
 
-    public function test_builds_a_postgres_pool_from_the_default_connections_keys(): void
+    public function test_native_driver_builds_the_mysqli_async_client(): void
+    {
+        $config = new Config([
+            'DB_CONNECTION' => 'mysql',
+            'DB_DRIVER' => 'native',
+            'DB_PASSWORD' => 'secret',
+        ]);
+
+        self::assertInstanceOf(MysqliAsyncClient::class, SqlConnectionFactory::fromConfig($config));
+    }
+
+    public function test_native_driver_builds_the_pgsql_async_client(): void
     {
         $config = new Config([
             'DB_CONNECTION' => 'pgsql',
-            'DB_DRIVER' => 'amphp',
-            'DB_HOST' => 'db.internal',
-            'DB_NAME' => 'app',
-            'DB_USER' => 'app',
+            'DB_DRIVER' => 'native',
             'DB_PASSWORD' => 'secret',
         ]);
 
-        self::assertInstanceOf(PostgresConnectionPool::class, SqlConnectionFactory::fromConfig($config));
+        self::assertInstanceOf(PgsqlAsyncClient::class, SqlConnectionFactory::fromConfig($config));
     }
 
-    public function test_a_named_connection_reads_its_own_keys_not_the_defaults(): void
+    public function test_pdo_driver_builds_the_pdo_pgsql_client(): void
+    {
+        $config = new Config([
+            'DB_CONNECTION' => 'pgsql',
+            'DB_DRIVER' => 'pdo',
+            'DB_PASSWORD' => 'secret',
+        ]);
+
+        self::assertInstanceOf(PdoPgsqlClient::class, SqlConnectionFactory::fromConfig($config));
+    }
+
+    public function test_driver_selection_is_scoped_per_named_connection(): void
     {
         $config = new Config([
             'DB_CONNECTION' => 'mysql',
-            'DB_DRIVER' => 'amphp',
-            'DB_HOST' => 'default.internal',
-            'DB_PASSWORD' => 'default-secret',
-            'DB_DB2_CONNECTION' => 'pgsql',
-            'DB_DB2_DRIVER' => 'amphp',
-            'DB_DB2_HOST' => 'db2.internal',
-            'DB_DB2_PASSWORD' => 'db2-secret',
+            'DB_DRIVER' => 'pdo',
+            'DB_PASSWORD' => 'secret',
+            'DB_DB2_CONNECTION' => 'mysql',
+            'DB_DB2_DRIVER' => 'native',
+            'DB_DB2_PASSWORD' => 'secret',
         ]);
 
-        self::assertInstanceOf(MysqlConnectionPool::class, SqlConnectionFactory::fromConfig($config));
-        self::assertInstanceOf(PostgresConnectionPool::class, SqlConnectionFactory::fromConfig($config, 'db2'));
+        self::assertInstanceOf(PdoMysqlClient::class, SqlConnectionFactory::fromConfig($config));
+        self::assertInstanceOf(MysqliAsyncClient::class, SqlConnectionFactory::fromConfig($config, 'db2'));
     }
 
     public function test_throws_a_clear_error_when_the_dialect_is_missing_for_the_default_connection(): void
@@ -87,192 +103,6 @@ final class SqlConnectionFactoryTest extends TestCase
         SqlConnectionFactory::fromConfig($config);
     }
 
-    public function test_db_options_are_appended_to_the_mysql_connection_string(): void
-    {
-        $config = new Config([
-            'DB_CONNECTION' => 'mysql',
-            'DB_DRIVER' => 'amphp',
-            'DB_HOST' => 'db.internal',
-            'DB_PASSWORD' => 'secret',
-            'DB_OPTIONS' => 'charset=latin1 compress=on',
-        ]);
-
-        $pool = SqlConnectionFactory::fromConfig($config);
-        self::assertInstanceOf(MysqlConnectionPool::class, $pool);
-        self::assertSame('latin1', $pool->getConfig()->getCharset());
-        self::assertTrue($pool->getConfig()->isCompressionEnabled());
-    }
-
-    public function test_db_options_are_appended_to_the_postgres_connection_string(): void
-    {
-        $config = new Config([
-            'DB_CONNECTION' => 'pgsql',
-            'DB_DRIVER' => 'amphp',
-            'DB_HOST' => 'db.internal',
-            'DB_PASSWORD' => 'secret',
-            'DB_OPTIONS' => 'sslmode=require applicationName=tfbench',
-        ]);
-
-        $pool = SqlConnectionFactory::fromConfig($config);
-        self::assertInstanceOf(PostgresConnectionPool::class, $pool);
-        self::assertSame('require', $pool->getConfig()->getSslMode());
-        self::assertSame('tfbench', $pool->getConfig()->getApplicationName());
-    }
-
-    public function test_db_options_are_scoped_per_named_connection(): void
-    {
-        $config = new Config([
-            'DB_CONNECTION' => 'mysql',
-            'DB_DRIVER' => 'amphp',
-            'DB_HOST' => 'default.internal',
-            'DB_PASSWORD' => 'default-secret',
-            'DB_OPTIONS' => 'charset=latin1',
-            'DB_DB2_CONNECTION' => 'mysql',
-            'DB_DB2_DRIVER' => 'amphp',
-            'DB_DB2_HOST' => 'db2.internal',
-            'DB_DB2_PASSWORD' => 'db2-secret',
-            'DB_DB2_OPTIONS' => 'charset=ascii',
-        ]);
-
-        $default = SqlConnectionFactory::fromConfig($config);
-        $named = SqlConnectionFactory::fromConfig($config, 'db2');
-        self::assertInstanceOf(MysqlConnectionPool::class, $default);
-        self::assertInstanceOf(MysqlConnectionPool::class, $named);
-        self::assertSame('latin1', $default->getConfig()->getCharset());
-        self::assertSame('ascii', $named->getConfig()->getCharset());
-    }
-
-    public function test_db_options_default_to_absent_leaving_amphps_own_defaults_in_place(): void
-    {
-        $config = new Config([
-            'DB_CONNECTION' => 'mysql',
-            'DB_DRIVER' => 'amphp',
-            'DB_HOST' => 'db.internal',
-            'DB_PASSWORD' => 'secret',
-        ]);
-
-        $pool = SqlConnectionFactory::fromConfig($config);
-        self::assertInstanceOf(MysqlConnectionPool::class, $pool);
-        self::assertSame('utf8mb4', $pool->getConfig()->getCharset());
-    }
-
-    public function test_pool_options_are_passed_through_for_mysql(): void
-    {
-        $config = new Config([
-            'DB_CONNECTION' => 'mysql',
-            'DB_DRIVER' => 'amphp',
-            'DB_HOST' => 'db.internal',
-            'DB_PASSWORD' => 'secret',
-        ]);
-
-        $pool = SqlConnectionFactory::fromConfig($config, poolOptions: ['maxConnections' => 256, 'idleTimeout' => 30]);
-        self::assertInstanceOf(MysqlConnectionPool::class, $pool);
-        self::assertSame(256, $pool->getConnectionLimit());
-        self::assertSame(30, $pool->getIdleTimeout());
-    }
-
-    public function test_pool_options_are_passed_through_for_postgres(): void
-    {
-        $config = new Config([
-            'DB_CONNECTION' => 'pgsql',
-            'DB_DRIVER' => 'amphp',
-            'DB_HOST' => 'db.internal',
-            'DB_PASSWORD' => 'secret',
-        ]);
-
-        $pool = SqlConnectionFactory::fromConfig($config, poolOptions: ['maxConnections' => 128]);
-        self::assertInstanceOf(PostgresConnectionPool::class, $pool);
-        self::assertSame(128, $pool->getConnectionLimit());
-    }
-
-    public function test_pool_options_default_to_amphps_own_default_pool_size(): void
-    {
-        $config = new Config([
-            'DB_CONNECTION' => 'mysql',
-            'DB_DRIVER' => 'amphp',
-            'DB_HOST' => 'db.internal',
-            'DB_PASSWORD' => 'secret',
-        ]);
-
-        $pool = SqlConnectionFactory::fromConfig($config);
-        self::assertInstanceOf(MysqlConnectionPool::class, $pool);
-        self::assertSame(100, $pool->getConnectionLimit());
-    }
-
-    public function test_a_pool_option_valid_only_for_the_other_dialect_throws(): void
-    {
-        $config = new Config([
-            'DB_CONNECTION' => 'mysql',
-            'DB_DRIVER' => 'amphp',
-            'DB_HOST' => 'db.internal',
-            'DB_PASSWORD' => 'secret',
-        ]);
-
-        // resetConnections exists on PostgresConnectionPool's own constructor,
-        // not MysqlConnectionPool's — PHP's own named-argument enforcement
-        // rejects it directly, no Kinetis-specific validation involved.
-        $this->expectException(\Error::class);
-        SqlConnectionFactory::fromConfig($config, poolOptions: ['resetConnections' => false]);
-    }
-    public function test_auto_driver_selects_pdo_outside_a_persistent_runtime(): void
-    {
-        $config = new Config([
-            'DB_CONNECTION' => 'mysql',
-            'DB_PASSWORD' => 'secret',
-        ]);
-
-        // The test process is not a FrankenPHP worker, so 'auto' must fall back to PDO.
-        self::assertInstanceOf(Driver\PdoMysqlClient::class, SqlConnectionFactory::fromConfig($config));
-    }
-
-    public function test_native_driver_builds_the_mysqli_async_client(): void
-    {
-        $config = new Config([
-            'DB_CONNECTION' => 'mysql',
-            'DB_DRIVER' => 'native',
-            'DB_PASSWORD' => 'secret',
-        ]);
-
-        self::assertInstanceOf(Driver\MysqliAsyncClient::class, SqlConnectionFactory::fromConfig($config));
-    }
-
-    public function test_native_driver_builds_the_pgsql_async_client(): void
-    {
-        $config = new Config([
-            'DB_CONNECTION' => 'pgsql',
-            'DB_DRIVER' => 'native',
-            'DB_PASSWORD' => 'secret',
-        ]);
-
-        self::assertInstanceOf(Driver\PgsqlAsyncClient::class, SqlConnectionFactory::fromConfig($config));
-    }
-
-    public function test_pdo_driver_builds_the_pdo_pgsql_client(): void
-    {
-        $config = new Config([
-            'DB_CONNECTION' => 'pgsql',
-            'DB_DRIVER' => 'pdo',
-            'DB_PASSWORD' => 'secret',
-        ]);
-
-        self::assertInstanceOf(Driver\PdoPgsqlClient::class, SqlConnectionFactory::fromConfig($config));
-    }
-
-    public function test_driver_selection_is_scoped_per_named_connection(): void
-    {
-        $config = new Config([
-            'DB_CONNECTION' => 'mysql',
-            'DB_DRIVER' => 'pdo',
-            'DB_PASSWORD' => 'secret',
-            'DB_DB2_CONNECTION' => 'mysql',
-            'DB_DB2_DRIVER' => 'native',
-            'DB_DB2_PASSWORD' => 'secret',
-        ]);
-
-        self::assertInstanceOf(Driver\PdoMysqlClient::class, SqlConnectionFactory::fromConfig($config));
-        self::assertInstanceOf(Driver\MysqliAsyncClient::class, SqlConnectionFactory::fromConfig($config, 'db2'));
-    }
-
     public function test_throws_when_the_driver_is_unknown(): void
     {
         $config = new Config([
@@ -282,7 +112,81 @@ final class SqlConnectionFactoryTest extends TestCase
         ]);
 
         $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('DB_DRIVER must be "auto", "native", "pdo", or "amphp", got "odbc".');
+        $this->expectExceptionMessage('DB_DRIVER must be "auto", "native", or "pdo", got "odbc".');
         SqlConnectionFactory::fromConfig($config);
+    }
+
+    public function test_an_option_the_selected_driver_cannot_honor_fails_loudly(): void
+    {
+        // applicationName is a Postgres concept; the mysqli driver must
+        // reject it at construction, never silently ignore it.
+        $config = new Config([
+            'DB_CONNECTION' => 'mysql',
+            'DB_DRIVER' => 'native',
+            'DB_PASSWORD' => 'secret',
+            'DB_APP_NAME' => 'myapp',
+        ]);
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('applicationName');
+        SqlConnectionFactory::fromConfig($config);
+    }
+
+    public function test_legacy_db_options_keys_with_canonical_equivalents_are_translated(): void
+    {
+        // charset=latin1 has a canonical equivalent; it must not land in
+        // extraConnectionString (which the mysqli driver would reject),
+        // and must therefore construct fine on a driver with no free-form
+        // string support.
+        $config = new Config([
+            'DB_CONNECTION' => 'mysql',
+            'DB_DRIVER' => 'native',
+            'DB_PASSWORD' => 'secret',
+            'DB_OPTIONS' => 'charset=latin1 compress=on',
+        ]);
+
+        self::assertInstanceOf(MysqliAsyncClient::class, SqlConnectionFactory::fromConfig($config));
+    }
+
+    public function test_untranslatable_db_options_keys_are_rejected_by_drivers_without_free_form_strings(): void
+    {
+        $config = new Config([
+            'DB_CONNECTION' => 'mysql',
+            'DB_DRIVER' => 'native',
+            'DB_PASSWORD' => 'secret',
+            'DB_OPTIONS' => 'local-infile=1',
+        ]);
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('extraConnectionString');
+        SqlConnectionFactory::fromConfig($config);
+    }
+
+    public function test_untranslatable_db_options_keys_pass_through_to_libpq_backed_drivers(): void
+    {
+        // libpq accepts free-form connection-string keys and validates
+        // them itself at connect time — construction must succeed.
+        $config = new Config([
+            'DB_CONNECTION' => 'pgsql',
+            'DB_DRIVER' => 'native',
+            'DB_PASSWORD' => 'secret',
+            'DB_OPTIONS' => 'target_session_attrs=read-write',
+        ]);
+
+        self::assertInstanceOf(PgsqlAsyncClient::class, SqlConnectionFactory::fromConfig($config));
+    }
+
+    public function test_connection_options_reject_a_non_identifier_charset(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('charset');
+        new ConnectionOptions(charset: "utf8mb4'; DROP TABLE x; --");
+    }
+
+    public function test_connection_options_reject_a_non_positive_max_connections(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('maxConnections');
+        new ConnectionOptions(maxConnections: 0);
     }
 }

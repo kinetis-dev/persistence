@@ -4,20 +4,15 @@ declare(strict_types=1);
 
 namespace Kinetis\Persistence;
 
-use Amp\Sql\SqlLink;
-use Amp\Sql\SqlTransaction;
+use Kinetis\Persistence\Contract\SqlLink;
+use Kinetis\Persistence\Contract\SqlTransaction;
 use Psr\Log\LoggerInterface;
 use Throwable;
 
 /**
- * The request-lifecycle safety net for SQL transactions — the genuinely
- * Kinetis-specific piece of the DB integration. amphp's
- * MysqlConnectionPool/PostgresConnectionPool already handle connection
- * pooling, idle-connection eviction, and dead-socket recycling internally
- * (see `Amp\Sql\Common\SqlCommonConnectionPool`); there was nothing left
- * for Kinetis to build there, and `Kinetis\Persistence\Pool` is
- * deliberately not used by this integration for exactly that reason. What
- * amphp has no way to know about is Kinetis's `RequestScope`: if
+ * The request-lifecycle safety net for SQL transactions. The drivers
+ * themselves handle connection pooling and dead-connection recycling;
+ * what no driver can know about is Kinetis's `RequestScope`: if
  * application code begins a transaction and something throws before it
  * commits or rolls back, nothing closes it, and it leaks into whatever
  * that pooled connection is used for next.
@@ -29,23 +24,20 @@ use Throwable;
  * `RequestScope::onDispose()` unconditionally; it's a no-op for requests
  * that never touch a database.
  *
- * Works identically for MySQL and Postgres: both implement the shared
- * `Amp\Sql\SqlLink`/`SqlTransaction` abstraction, so this class doesn't
- * need to know which driver it's talking to.
+ * Works identically for MySQL and Postgres, and for every driver: all
+ * implement the shared `Kinetis\Persistence\Contract\SqlLink`/
+ * `SqlTransaction` contracts, so this class never needs to know which
+ * one it's talking to.
  */
 final class TransactionGuard
 {
-    /** @var list<SqlTransaction<*, *, *>> */
+    /** @var list<SqlTransaction> */
     private array $open = [];
 
     public function __construct(
         private readonly LoggerInterface $logger,
     ) {}
 
-    /**
-     * @param SqlLink<*, *, *> $link
-     * @return SqlTransaction<*, *, *>
-     */
     public function beginTransaction(SqlLink $link): SqlTransaction
     {
         $transaction = $link->beginTransaction();
@@ -63,8 +55,7 @@ final class TransactionGuard
      * rollback() before the request ends.
      *
      * @template T
-     * @param SqlLink<*, *, *> $link
-     * @param callable(SqlTransaction<*, *, *>): T $callback
+     * @param callable(SqlTransaction): T $callback
      * @return T
      */
     public function transaction(SqlLink $link, callable $callback): mixed

@@ -4,17 +4,17 @@ declare(strict_types=1);
 
 namespace Kinetis\Persistence\Driver;
 
-use Amp\Postgres\PostgresResult;
 use IteratorAggregate;
+use Kinetis\Persistence\Contract\SqlResult;
 use Traversable;
 
 /**
- * A fully-buffered result set for the native Postgres drivers
- * (ext-pgsql/PDO) — same buffering rationale as {@see BufferedMysqlResult}.
+ * The one buffered result implementation every driver shares — see
+ * {@see SqlResult} for why buffering is part of the contract.
  *
  * @implements IteratorAggregate<int, array<string, mixed>>
  */
-final class BufferedPostgresResult implements PostgresResult, IteratorAggregate
+final class BufferedSqlResult implements SqlResult, IteratorAggregate
 {
     private int $cursor = 0;
 
@@ -26,6 +26,7 @@ final class BufferedPostgresResult implements PostgresResult, IteratorAggregate
         private readonly array $rows,
         private readonly ?int $rowCount,
         private readonly ?int $columnCount,
+        private readonly ?int $lastInsertId = null,
     ) {}
 
     public function getIterator(): Traversable
@@ -38,11 +39,6 @@ final class BufferedPostgresResult implements PostgresResult, IteratorAggregate
         return $this->rows[$this->cursor++] ?? null;
     }
 
-    public function getNextResult(): ?self
-    {
-        return null;
-    }
-
     public function getRowCount(): ?int
     {
         return $this->rowCount;
@@ -51,5 +47,10 @@ final class BufferedPostgresResult implements PostgresResult, IteratorAggregate
     public function getColumnCount(): ?int
     {
         return $this->columnCount;
+    }
+
+    public function getLastInsertId(): ?int
+    {
+        return $this->lastInsertId;
     }
 }

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kinetis\Persistence\Driver;
 
+use Kinetis\Persistence\Contract\SqlResult;
 use PgSql\Connection;
 use Revolt\EventLoop;
 
@@ -17,7 +18,7 @@ use Revolt\EventLoop;
  */
 final class PgsqlAsyncConnection
 {
-    /** @var EventLoop\Suspension<\Amp\Postgres\PostgresResult>|null */
+    /** @var EventLoop\Suspension<SqlResult>|null */
     public ?EventLoop\Suspension $suspension = null;
 
     public bool $broken = false;

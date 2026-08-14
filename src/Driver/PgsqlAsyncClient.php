@@ -4,14 +4,13 @@ declare(strict_types=1);
 
 namespace Kinetis\Persistence\Driver;
 
-use Amp\Postgres\PostgresLink;
-use Amp\Postgres\PostgresResult;
-use Amp\Postgres\PostgresStatement;
-use Amp\Postgres\PostgresTransaction;
-use Amp\Sql\SqlConnectionException;
-use Amp\Sql\SqlException;
-use Amp\Sql\SqlQueryError;
 use Closure;
+use Kinetis\Persistence\ConnectionOptions;
+use Kinetis\Persistence\Contract\PostgresLink;
+use Kinetis\Persistence\Contract\PostgresTransaction;
+use Kinetis\Persistence\Contract\SqlResult;
+use Kinetis\Persistence\Exception\ConnectionException;
+use Kinetis\Persistence\Exception\QueryException;
 use PgSql\Result;
 use Revolt\EventLoop;
 use SplQueue;
@@ -20,25 +19,30 @@ use Throwable;
 /**
  * A Postgres client built on ext-pgsql's native async API
  * (pg_send_query/pg_send_query_params + pg_get_result), with genuine
- * event-loop integration: unlike mysqli, libpq exports its socket
- * (pg_socket()), so every connection is watched by a Revolt onReadable
- * callback and a waiting Fiber consumes zero CPU until its result
- * actually arrives — no polling anywhere.
+ * event-loop integration: libpq exports its socket (pg_socket()), so
+ * every connection is watched by a Revolt onReadable callback and a
+ * waiting Fiber consumes zero CPU until its result actually arrives —
+ * no polling anywhere.
  *
  * The wire protocol runs inside libpq at C speed; execute() uses real
  * server-side parameters via pg_send_query_params ("?" placeholders are
  * rewritten to "$1".."$n"). Numeric/bool columns are converted to native
- * PHP types by field-type inspection, matching amphp/postgres's
- * behavior for the common types.
+ * PHP types by field-type inspection.
  *
- * One query is in flight per connection; `maxConnections` bounds fan-out
- * width, and callers beyond it wait for a connection like any pool.
+ * One query is in flight per connection;
+ * {@see ConnectionOptions::$maxConnections} bounds fan-out width, and
+ * callers beyond it wait for a connection like any pool. Dispatch-phase
+ * failures on a dead pooled connection are retried once on a fresh one
+ * (see {@see StaleConnectionException}); reap-phase failures never are.
+ *
  * Intended primarily for persistent runtimes (FrankenPHP worker mode)
  * where connections outlive requests; under PHP-FPM prefer
  * {@see PdoPgsqlClient} via SqlConnectionFactory's driver selection.
  */
 final class PgsqlAsyncClient implements PostgresLink
 {
+    private readonly ConnectionOptions $options;
+
     /** @var array<int, PgsqlAsyncConnection> keyed by spl_object_id */
     private array $connections = [];
 
@@ -50,106 +54,57 @@ final class PgsqlAsyncClient implements PostgresLink
 
     private bool $closed = false;
 
-    /** @var list<Closure(): void> */
-    private array $onClose = [];
-
-    private int $lastUsedAt;
-
     public function __construct(
         private readonly string $host,
         private readonly string $user,
         #[\SensitiveParameter] private readonly string $password,
         private readonly string $database,
         private readonly int $port = 5432,
-        private readonly int $maxConnections = 8,
+        ?ConnectionOptions $options = null,
     ) {
+        $this->options = $options ?? new ConnectionOptions();
+        // Collation and protocol compression are MySQL concepts.
+        $this->options->rejectUnsupported('native pgsql', ['collation', 'compression']);
         $this->waiters = new SplQueue();
-        $this->lastUsedAt = \time();
     }
 
-    public function query(string $sql): PostgresResult
+    public function query(string $sql): SqlResult
     {
-        $connection = $this->acquire();
-
-        try {
-            return $this->queryOn($connection, $sql);
-        } finally {
-            $this->release($connection);
-        }
+        return $this->runPooled(fn (PgsqlAsyncConnection $connection): SqlResult => $this->queryOn($connection, $sql));
     }
 
-    /**
-     * @param array<int|string, mixed> $params
-     */
-    public function execute(string $sql, array $params = []): PostgresResult
+    public function execute(string $sql, array $params = []): SqlResult
     {
-        $connection = $this->acquire();
-
-        try {
-            return $this->executeOn($connection, $sql, $params);
-        } finally {
-            $this->release($connection);
-        }
-    }
-
-    public function prepare(string $sql): PostgresStatement
-    {
-        throw new SqlException(
-            'PgsqlAsyncClient does not support prepare() yet — use execute(), which runs real '
-            . 'server-side parameter binding per call via pg_send_query_params.',
+        return $this->runPooled(
+            fn (PgsqlAsyncConnection $connection): SqlResult => $this->executeOn($connection, $sql, $params),
         );
     }
 
     public function beginTransaction(): PostgresTransaction
     {
-        $connection = $this->acquire();
+        for ($attempt = 0; ; $attempt++) {
+            $connection = $this->acquire();
 
-        try {
-            $this->queryOn($connection, 'BEGIN');
-        } catch (Throwable $e) {
-            $this->release($connection);
+            try {
+                $this->queryOn($connection, 'BEGIN');
+            } catch (StaleConnectionException $e) {
+                $this->release($connection);
 
-            throw $e;
+                if ($attempt >= 1) {
+                    throw new ConnectionException('Postgres connection lost during dispatch (after retry)', 0, $e);
+                }
+
+                continue;
+            } catch (Throwable $e) {
+                $this->release($connection);
+
+                throw $e;
+            }
+
+            return new PgsqlAsyncTransaction($this, $connection, function (PgsqlAsyncConnection $connection): void {
+                $this->release($connection);
+            });
         }
-
-        return new PgsqlAsyncTransaction($this, $connection, function (PgsqlAsyncConnection $connection): void {
-            $this->release($connection);
-        });
-    }
-
-    public function notify(string $channel, string $payload = ''): PostgresResult
-    {
-        $sql = 'NOTIFY ' . $this->quoteIdentifier($channel)
-            . ($payload === '' ? '' : ', ' . $this->quoteLiteral($payload));
-
-        return $this->query($sql);
-    }
-
-    public function quoteLiteral(string $data): string
-    {
-        $quoted = \pg_escape_literal($this->anyHandle(), $data);
-
-        if ($quoted === false) {
-            throw new SqlException('Failed to quote literal');
-        }
-
-        return $quoted;
-    }
-
-    public function quoteIdentifier(string $name): string
-    {
-        $quoted = \pg_escape_identifier($this->anyHandle(), $name);
-
-        if ($quoted === false) {
-            throw new SqlException('Failed to quote identifier');
-        }
-
-        return $quoted;
-    }
-
-    public function escapeByteA(string $data): string
-    {
-        return \pg_escape_bytea($this->anyHandle(), $data);
     }
 
     public function close(): void
@@ -162,7 +117,7 @@ final class PgsqlAsyncClient implements PostgresLink
 
         foreach ($this->connections as $connection) {
             EventLoop::cancel($connection->watcherId);
-            $connection->suspension?->throw(new SqlConnectionException('The client was closed with a query in flight'));
+            $connection->suspension?->throw(new ConnectionException('The client was closed with a query in flight'));
             $connection->suspension = null;
             \pg_close($connection->handle);
         }
@@ -172,10 +127,6 @@ final class PgsqlAsyncClient implements PostgresLink
         while (!$this->waiters->isEmpty()) {
             $this->waiters->dequeue()->resume(null);
         }
-
-        foreach ($this->onClose as $onClose) {
-            $onClose();
-        }
     }
 
     public function isClosed(): bool
@@ -183,31 +134,33 @@ final class PgsqlAsyncClient implements PostgresLink
         return $this->closed;
     }
 
-    public function onClose(Closure $onClose): void
+    /**
+     * @param Closure(PgsqlAsyncConnection): SqlResult $operation
+     */
+    private function runPooled(Closure $operation): SqlResult
     {
-        if ($this->closed) {
-            $onClose();
+        for ($attempt = 0; ; $attempt++) {
+            $connection = $this->acquire();
 
-            return;
+            try {
+                return $operation($connection);
+            } catch (StaleConnectionException $e) {
+                if ($attempt >= 1) {
+                    throw new ConnectionException('Postgres connection lost during dispatch (after retry)', 0, $e);
+                }
+            } finally {
+                $this->release($connection);
+            }
         }
-
-        $this->onClose[] = $onClose;
-    }
-
-    public function getLastUsedAt(): int
-    {
-        return $this->lastUsedAt;
     }
 
     /** @internal Also used by {@see PgsqlAsyncTransaction}. */
-    public function queryOn(PgsqlAsyncConnection $connection, string $sql): PostgresResult
+    public function queryOn(PgsqlAsyncConnection $connection, string $sql): SqlResult
     {
         $this->assertOpen();
 
-        if (!\pg_send_query($connection->handle, $sql)) {
-            $connection->broken = true;
-
-            throw new SqlQueryError('Failed to dispatch query: ' . \pg_last_error($connection->handle), $sql);
+        if (!@\pg_send_query($connection->handle, $sql)) {
+            throw $this->dispatchFailure($connection, $sql);
         }
 
         return $this->awaitResult($connection);
@@ -218,41 +171,50 @@ final class PgsqlAsyncClient implements PostgresLink
      *
      * @internal Also used by {@see PgsqlAsyncTransaction}.
      */
-    public function executeOn(PgsqlAsyncConnection $connection, string $sql, array $params): PostgresResult
+    public function executeOn(PgsqlAsyncConnection $connection, string $sql, array $params): SqlResult
     {
         $this->assertOpen();
 
-        $position = 0;
-        $rewritten = SqlParamInterpolator::interpolate($sql, \array_values($params), static function (mixed $value, int $index) use (&$position): string {
-            $position = $index + 1;
-
-            return '$' . $position;
-        });
+        $rewritten = SqlParamInterpolator::interpolate(
+            $sql,
+            \array_values($params),
+            static fn (mixed $value, int $index): string => '$' . ($index + 1),
+        );
 
         $encoded = \array_map(static fn (mixed $value): ?string => match (true) {
             $value === null => null,
             \is_bool($value) => $value ? 't' : 'f',
             \is_int($value), \is_float($value), \is_string($value) => (string) $value,
-            default => throw new SqlQueryError(
+            default => throw new QueryException(
                 'Unsupported parameter type ' . \get_debug_type($value) . ' — only scalars and null can be bound',
             ),
         }, \array_values($params));
 
-        if (!\pg_send_query_params($connection->handle, $rewritten, $encoded)) {
-            $connection->broken = true;
-
-            throw new SqlQueryError('Failed to dispatch query: ' . \pg_last_error($connection->handle), $sql);
+        if (!@\pg_send_query_params($connection->handle, $rewritten, $encoded)) {
+            throw $this->dispatchFailure($connection, $sql);
         }
 
         return $this->awaitResult($connection);
     }
 
-    private function awaitResult(PgsqlAsyncConnection $connection): PostgresResult
+    private function dispatchFailure(PgsqlAsyncConnection $connection, string $sql): Throwable
+    {
+        $connection->broken = true;
+        $message = \pg_last_error($connection->handle) ?: 'Failed to dispatch query';
+
+        if (\pg_connection_status($connection->handle) !== \PGSQL_CONNECTION_OK) {
+            return new StaleConnectionException("Postgres connection lost during dispatch: {$message}");
+        }
+
+        return new QueryException($message, $sql);
+    }
+
+    private function awaitResult(PgsqlAsyncConnection $connection): SqlResult
     {
         $connection->suspension = EventLoop::getSuspension();
         EventLoop::enable($connection->watcherId);
 
-        /** @var PostgresResult */
+        /** @var SqlResult */
         return $connection->suspension->suspend();
     }
 
@@ -264,10 +226,10 @@ final class PgsqlAsyncClient implements PostgresLink
     private function onReadable(PgsqlAsyncConnection $connection): void
     {
         if (!\pg_consume_input($connection->handle)) {
-            $this->settle($connection, null, new SqlConnectionException(
+            $connection->broken = true;
+            $this->settle($connection, null, new ConnectionException(
                 'Postgres connection error: ' . \pg_last_error($connection->handle),
             ));
-            $connection->broken = true;
 
             return;
         }
@@ -283,17 +245,15 @@ final class PgsqlAsyncClient implements PostgresLink
             $status = \pg_result_status($result);
 
             if ($status === \PGSQL_FATAL_ERROR || $status === \PGSQL_BAD_RESPONSE) {
-                $error ??= new SqlQueryError(\pg_result_error($result) ?: 'Query failed', '');
+                $error ??= new QueryException(\pg_result_error($result) ?: 'Query failed');
                 continue;
             }
 
             $last = $result;
         }
 
-        $this->lastUsedAt = \time();
-
         if ($error !== null || $last === null) {
-            $this->settle($connection, null, $error ?? new SqlQueryError('Query produced no result', ''));
+            $this->settle($connection, null, $error ?? new QueryException('Query produced no result'));
 
             return;
         }
@@ -301,7 +261,7 @@ final class PgsqlAsyncClient implements PostgresLink
         $this->settle($connection, $this->buildResult($last), null);
     }
 
-    private function settle(PgsqlAsyncConnection $connection, ?PostgresResult $result, ?Throwable $error): void
+    private function settle(PgsqlAsyncConnection $connection, ?SqlResult $result, ?Throwable $error): void
     {
         EventLoop::disable($connection->watcherId);
 
@@ -322,12 +282,12 @@ final class PgsqlAsyncClient implements PostgresLink
         $suspension->resume($result);
     }
 
-    private function buildResult(Result $result): BufferedPostgresResult
+    private function buildResult(Result $result): BufferedSqlResult
     {
         $fieldCount = \pg_num_fields($result);
 
         if ($fieldCount <= 0) {
-            return new BufferedPostgresResult([], \pg_affected_rows($result), null);
+            return new BufferedSqlResult([], \pg_affected_rows($result), null);
         }
 
         /** @var list<array<string, mixed>> $rows */
@@ -360,7 +320,7 @@ final class PgsqlAsyncClient implements PostgresLink
             unset($row);
         }
 
-        return new BufferedPostgresResult($rows, \pg_num_rows($result), $fieldCount);
+        return new BufferedSqlResult($rows, \pg_num_rows($result), $fieldCount);
     }
 
     private function acquire(): PgsqlAsyncConnection
@@ -374,7 +334,7 @@ final class PgsqlAsyncClient implements PostgresLink
                 return $connection;
             }
 
-            if (\count($this->connections) < $this->maxConnections) {
+            if (\count($this->connections) < $this->options->maxConnections) {
                 return $this->connect();
             }
 
@@ -416,14 +376,40 @@ final class PgsqlAsyncClient implements PostgresLink
 
     private function connect(): PgsqlAsyncConnection
     {
+        $quote = static fn (string $value): string => "'" . \addcslashes($value, "'\\") . "'";
+
         $connectionString = \sprintf(
-            "host='%s' port=%d dbname='%s' user='%s' password='%s'",
-            \addcslashes($this->host, "'\\"),
+            'host=%s port=%d dbname=%s user=%s password=%s',
+            $quote($this->host),
             $this->port,
-            \addcslashes($this->database, "'\\"),
-            \addcslashes($this->user, "'\\"),
-            \addcslashes($this->password, "'\\"),
+            $quote($this->database),
+            $quote($this->user),
+            $quote($this->password),
         );
+
+        // The canonical option set, translated to libpq's connection
+        // string keys.
+        if ($this->options->charset !== null) {
+            $connectionString .= ' client_encoding=' . $quote($this->options->charset);
+        }
+
+        if ($this->options->sslMode !== null) {
+            $connectionString .= ' sslmode=' . $quote($this->options->sslMode);
+        }
+
+        if ($this->options->connectTimeout !== null) {
+            $connectionString .= " connect_timeout={$this->options->connectTimeout}";
+        }
+
+        if ($this->options->applicationName !== null) {
+            $connectionString .= ' application_name=' . $quote($this->options->applicationName);
+        }
+
+        if ($this->options->extraConnectionString !== '') {
+            // libpq's own parser validates these; unknown keys fail the
+            // connect loudly rather than being silently dropped.
+            $connectionString .= ' ' . $this->options->extraConnectionString;
+        }
 
         // FORCE_NEW: pg_connect() otherwise silently reuses one shared
         // handle for identical connection strings, collapsing the pool
@@ -431,7 +417,7 @@ final class PgsqlAsyncClient implements PostgresLink
         $handle = @\pg_connect($connectionString, \PGSQL_CONNECT_FORCE_NEW);
 
         if ($handle === false) {
-            throw new SqlConnectionException('Failed to connect to Postgres');
+            throw new ConnectionException('Failed to connect to Postgres');
         }
 
         $socket = \pg_socket($handle);
@@ -439,7 +425,7 @@ final class PgsqlAsyncClient implements PostgresLink
         if ($socket === false) {
             \pg_close($handle);
 
-            throw new SqlConnectionException('Failed to export the Postgres connection socket');
+            throw new ConnectionException('Failed to export the Postgres connection socket');
         }
 
         $connection = new PgsqlAsyncConnection($handle, $socket);
@@ -452,25 +438,10 @@ final class PgsqlAsyncClient implements PostgresLink
         return $connection;
     }
 
-    private function anyHandle(): \PgSql\Connection
-    {
-        $this->assertOpen();
-
-        foreach ($this->connections as $connection) {
-            return $connection->handle;
-        }
-
-        // No connection yet — open the first and keep it available.
-        $connection = $this->connect();
-        $this->idle[] = $connection;
-
-        return $connection->handle;
-    }
-
     private function assertOpen(): void
     {
         if ($this->closed) {
-            throw new SqlConnectionException('The client has been closed');
+            throw new ConnectionException('The client has been closed');
         }
     }
 }

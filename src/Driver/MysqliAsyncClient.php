@@ -4,14 +4,13 @@ declare(strict_types=1);
 
 namespace Kinetis\Persistence\Driver;
 
-use Amp\Mysql\MysqlLink;
-use Amp\Mysql\MysqlResult;
-use Amp\Mysql\MysqlStatement;
-use Amp\Mysql\MysqlTransaction;
-use Amp\Sql\SqlConnectionException;
-use Amp\Sql\SqlException;
-use Amp\Sql\SqlQueryError;
 use Closure;
+use Kinetis\Persistence\ConnectionOptions;
+use Kinetis\Persistence\Contract\MysqlLink;
+use Kinetis\Persistence\Contract\MysqlTransaction;
+use Kinetis\Persistence\Contract\SqlResult;
+use Kinetis\Persistence\Exception\ConnectionException;
+use Kinetis\Persistence\Exception\QueryException;
 use mysqli;
 use mysqli_sql_exception;
 use Revolt\EventLoop;
@@ -22,9 +21,8 @@ use Throwable;
  * A MySQL client built on mysqli's native async mode (MYSQLI_ASYNC +
  * mysqli_poll + reap_async_query): the wire protocol and all waiting run
  * inside mysqlnd at C speed, while queries still overlap across
- * connections and suspend only their own Fiber — so `concurrently()`
- * fan-out works exactly as it does with amphp/mysql, at a fraction of
- * the per-query CPU cost.
+ * connections and suspend only their own Fiber — `concurrently()`
+ * fan-out works at a fraction of a userland protocol client's CPU cost.
  *
  * Intended for persistent runtimes (FrankenPHP worker mode), where one
  * instance lives for the whole worker thread and its connections are
@@ -40,23 +38,34 @@ use Throwable;
  * work is database queries — the common case, since a worker thread
  * serves one request at a time — this behaves like a plain blocking
  * wait with no added latency. Other event-loop work scheduled
- * concurrently (an outbound HTTP call, a timer) is delayed by at most
- * one blocking window per loop turn. The callback is disabled whenever
- * no query is in flight, so an idle client keeps the loop free to exit.
+ * concurrently is delayed by at most one blocking window per loop turn.
+ * The callback is disabled whenever no query is in flight, so an idle
+ * client keeps the loop free to exit.
  *
- * One query is in flight per connection at a time (a mysqli/protocol
- * constraint, same as amphp's pool); `maxConnections` bounds the fan-out
- * width, and callers beyond it wait for a connection like any pool.
+ * One query is in flight per connection at a time (a protocol
+ * constraint); {@see ConnectionOptions::$maxConnections} bounds the
+ * fan-out width, and callers beyond it wait for a connection like any
+ * pool.
  *
- * prepare() is not offered: mysqli has no async prepared-statement
- * execution, and execute() instead interpolates parameters client-side
- * via real_escape_string() — every value is escaped or numeric by
- * construction. Statement-shaped APIs that want a genuine server-side
- * prepare should use the amphp driver.
+ * A dispatch-phase failure whose error indicates the pooled connection
+ * itself died is retried once on a fresh connection — safe, because the
+ * statement never reached the server (see {@see StaleConnectionException}).
+ * Reap-phase failures are never retried.
+ *
+ * execute() realizes parameter binding as escaped client-side
+ * interpolation (mysqli has no async prepared-statement execution);
+ * every value is escaped via real_escape_string or numeric by
+ * construction, against the connection's actual charset — which this
+ * client always sets explicitly (utf8mb4 unless configured otherwise).
  */
 final class MysqliAsyncClient implements MysqlLink
 {
     private const int POLL_BLOCK_MICROSECONDS = 1000;
+
+    /** Client-side errno values meaning "the connection is gone" (CR_CONNECTION_ERROR, CR_SERVER_GONE_ERROR, CR_SERVER_LOST). */
+    private const array GONE_ERRNOS = [2002, 2006, 2013];
+
+    private readonly ConnectionOptions $options;
 
     /** @var array<int, mysqli> Every open connection, keyed by spl_object_id. */
     private array $connections = [];
@@ -64,7 +73,7 @@ final class MysqliAsyncClient implements MysqlLink
     /** @var list<mysqli> */
     private array $idle = [];
 
-    /** @var array<int, array{EventLoop\Suspension<MysqlResult>, mysqli}> In-flight queries, keyed by spl_object_id of the connection. */
+    /** @var array<int, array{EventLoop\Suspension<SqlResult>, mysqli}> In-flight queries, keyed by spl_object_id of the connection. */
     private array $pending = [];
 
     /**
@@ -82,71 +91,59 @@ final class MysqliAsyncClient implements MysqlLink
 
     private bool $closed = false;
 
-    /** @var list<Closure(): void> */
-    private array $onClose = [];
-
-    private int $lastUsedAt;
-
     public function __construct(
         private readonly string $host,
         private readonly string $user,
         #[\SensitiveParameter] private readonly string $password,
         private readonly string $database,
         private readonly int $port = 3306,
-        private readonly int $maxConnections = 8,
+        ?ConnectionOptions $options = null,
     ) {
+        $this->options = $options ?? new ConnectionOptions();
+        // MySQL TLS needs certificate plumbing this driver doesn't model
+        // yet; applicationName is a Postgres concept; free-form
+        // connection-string text has no mysqli equivalent.
+        $this->options->rejectUnsupported('native mysqli', ['sslMode', 'applicationName', 'extraConnectionString']);
         $this->waiters = new SplQueue();
-        $this->lastUsedAt = \time();
     }
 
-    public function query(string $sql): MysqlResult
+    public function query(string $sql): SqlResult
     {
-        $connection = $this->acquire();
-
-        try {
-            return $this->queryOn($connection, $sql);
-        } finally {
-            $this->release($connection);
-        }
+        return $this->runPooled(fn (mysqli $connection): SqlResult => $this->queryOn($connection, $sql));
     }
 
-    /**
-     * @param array<int|string, mixed> $params
-     */
-    public function execute(string $sql, array $params = []): MysqlResult
+    public function execute(string $sql, array $params = []): SqlResult
     {
-        $connection = $this->acquire();
-
-        try {
-            return $this->queryOn($connection, $this->interpolate($connection, $sql, $params));
-        } finally {
-            $this->release($connection);
-        }
-    }
-
-    public function prepare(string $sql): MysqlStatement
-    {
-        throw new SqlException(
-            'MysqliAsyncClient does not support prepare() — mysqli has no async statement execution. '
-            . 'Use execute() (client-side escaped interpolation) or the amphp driver.',
+        return $this->runPooled(
+            fn (mysqli $connection): SqlResult => $this->queryOn($connection, $this->interpolate($connection, $sql, $params)),
         );
     }
 
     public function beginTransaction(): MysqlTransaction
     {
-        $connection = $this->acquire();
+        for ($attempt = 0; ; $attempt++) {
+            $connection = $this->acquire();
 
-        try {
-            $this->queryOn($connection, 'START TRANSACTION');
-        } catch (Throwable $e) {
-            $this->release($connection);
+            try {
+                $this->queryOn($connection, 'START TRANSACTION');
+            } catch (StaleConnectionException $e) {
+                $this->release($connection);
 
-            throw $e;
+                if ($attempt >= 1) {
+                    throw new ConnectionException('MySQL connection lost during dispatch (after retry)', 0, $e);
+                }
+
+                continue;
+            } catch (Throwable $e) {
+                $this->release($connection);
+
+                throw $e;
+            }
+
+            return new MysqliAsyncTransaction($this, $connection, function (mysqli $connection): void {
+                $this->release($connection);
+            });
         }
-
-        return new MysqliAsyncTransaction($this, $connection, function (mysqli $connection): void {
-            $this->release($connection);
-        });
     }
 
     public function close(): void
@@ -163,7 +160,7 @@ final class MysqliAsyncClient implements MysqlLink
         }
 
         foreach ($this->pending as [$suspension]) {
-            $suspension->throw(new SqlConnectionException('The client was closed with a query in flight'));
+            $suspension->throw(new ConnectionException('The client was closed with a query in flight'));
         }
         $this->pending = [];
 
@@ -180,10 +177,6 @@ final class MysqliAsyncClient implements MysqlLink
         }
         $this->connections = [];
         $this->idle = [];
-
-        foreach ($this->onClose as $onClose) {
-            $onClose();
-        }
     }
 
     public function isClosed(): bool
@@ -191,20 +184,29 @@ final class MysqliAsyncClient implements MysqlLink
         return $this->closed;
     }
 
-    public function onClose(Closure $onClose): void
+    /**
+     * Acquire → run → release, with the one-retry policy for
+     * dispatch-phase deaths of pooled connections.
+     *
+     * @param Closure(mysqli): SqlResult $operation
+     */
+    private function runPooled(Closure $operation): SqlResult
     {
-        if ($this->closed) {
-            $onClose();
+        for ($attempt = 0; ; $attempt++) {
+            $connection = $this->acquire();
 
-            return;
+            try {
+                return $operation($connection);
+            } catch (StaleConnectionException $e) {
+                if ($attempt >= 1) {
+                    throw new ConnectionException('MySQL connection lost during dispatch (after retry)', 0, $e);
+                }
+                // Marked broken already; release() discards it and the
+                // loop retries on a fresh connection.
+            } finally {
+                $this->release($connection);
+            }
         }
-
-        $this->onClose[] = $onClose;
-    }
-
-    public function getLastUsedAt(): int
-    {
-        return $this->lastUsedAt;
     }
 
     /**
@@ -214,27 +216,27 @@ final class MysqliAsyncClient implements MysqlLink
      * @internal Also used by {@see MysqliAsyncTransaction}, which pins one
      *     connection for the transaction's lifetime.
      */
-    public function queryOn(mysqli $connection, string $sql): MysqlResult
+    public function queryOn(mysqli $connection, string $sql): SqlResult
     {
         if ($this->closed) {
-            throw new SqlConnectionException('The client has been closed');
+            throw new ConnectionException('The client has been closed');
         }
 
         try {
             $dispatched = $connection->query($sql, \MYSQLI_ASYNC);
         } catch (mysqli_sql_exception $e) {
-            throw new SqlQueryError($e->getMessage(), $sql, $e);
+            throw $this->dispatchFailure($connection, $sql, $e);
         }
 
         if ($dispatched === false) {
-            throw new SqlQueryError($connection->error !== '' ? $connection->error : 'Failed to dispatch query', $sql);
+            throw $this->dispatchFailure($connection, $sql, null);
         }
 
         $suspension = EventLoop::getSuspension();
         $this->pending[\spl_object_id($connection)] = [$suspension, $connection];
         $this->enablePolling();
 
-        /** @var MysqlResult */
+        /** @var SqlResult */
         return $suspension->suspend();
     }
 
@@ -243,9 +245,23 @@ final class MysqliAsyncClient implements MysqlLink
      *
      * @internal Also used by {@see MysqliAsyncTransaction}.
      */
-    public function executeOn(mysqli $connection, string $sql, array $params): MysqlResult
+    public function executeOn(mysqli $connection, string $sql, array $params): SqlResult
     {
         return $this->queryOn($connection, $this->interpolate($connection, $sql, $params));
+    }
+
+    private function dispatchFailure(mysqli $connection, string $sql, ?mysqli_sql_exception $e): Throwable
+    {
+        $errno = $connection->errno;
+        $message = $connection->error !== '' ? $connection->error : ($e?->getMessage() ?? 'Failed to dispatch query');
+
+        if (\in_array($errno, self::GONE_ERRNOS, true)) {
+            $this->broken[\spl_object_id($connection)] = true;
+
+            return new StaleConnectionException("MySQL connection lost during dispatch: {$message}", 0, $e);
+        }
+
+        return new QueryException($message, $sql, $e);
     }
 
     /**
@@ -260,7 +276,7 @@ final class MysqliAsyncClient implements MysqlLink
                 \is_int($value) => (string) $value,
                 \is_float($value) => \sprintf('%.17G', $value),
                 \is_string($value) => "'" . $connection->real_escape_string($value) . "'",
-                default => throw new SqlQueryError(
+                default => throw new QueryException(
                     'Unsupported parameter type ' . \get_debug_type($value) . ' — only scalars and null can be bound',
                 ),
             };
@@ -271,7 +287,7 @@ final class MysqliAsyncClient implements MysqlLink
     {
         while (true) {
             if ($this->closed) {
-                throw new SqlConnectionException('The client has been closed');
+                throw new ConnectionException('The client has been closed');
             }
 
             $connection = \array_pop($this->idle);
@@ -280,7 +296,7 @@ final class MysqliAsyncClient implements MysqlLink
                 return $connection;
             }
 
-            if (\count($this->connections) < $this->maxConnections) {
+            if (\count($this->connections) < $this->options->maxConnections) {
                 return $this->connect();
             }
 
@@ -330,21 +346,54 @@ final class MysqliAsyncClient implements MysqlLink
 
     private function connect(): mysqli
     {
+        $options = $this->options;
+
         try {
             $connection = \mysqli_init();
 
             if ($connection === false) {
-                throw new SqlConnectionException('mysqli_init() failed');
+                throw new ConnectionException('mysqli_init() failed');
             }
 
             $connection->options(\MYSQLI_OPT_INT_AND_FLOAT_NATIVE, 1);
-            $connection->real_connect($this->host, $this->user, $this->password, $this->database, $this->port);
+
+            if ($options->connectTimeout !== null) {
+                $connection->options(\MYSQLI_OPT_CONNECT_TIMEOUT, $options->connectTimeout);
+            }
+
+            $connection->real_connect(
+                $this->host,
+                $this->user,
+                $this->password,
+                $this->database,
+                $this->port,
+                flags: $options->compression === true ? \MYSQLI_CLIENT_COMPRESS : 0,
+            );
         } catch (mysqli_sql_exception $e) {
-            throw new SqlConnectionException('Failed to connect to MySQL: ' . $e->getMessage(), 0, $e);
+            throw new ConnectionException('Failed to connect to MySQL: ' . $e->getMessage(), 0, $e);
         }
 
         if ($connection->connect_errno !== 0) {
-            throw new SqlConnectionException('Failed to connect to MySQL: ' . $connection->connect_error);
+            throw new ConnectionException('Failed to connect to MySQL: ' . $connection->connect_error);
+        }
+
+        try {
+            // Always set explicitly: real_escape_string in interpolate()
+            // is charset-dependent, so the connection charset must never
+            // be whatever the server happens to default to.
+            $connection->set_charset($options->charset ?? 'utf8mb4');
+
+            if ($options->collation !== null) {
+                // Both values are constrained to identifier characters by
+                // ConnectionOptions' constructor.
+                $connection->query(\sprintf(
+                    "SET NAMES '%s' COLLATE '%s'",
+                    $options->charset ?? 'utf8mb4',
+                    $options->collation,
+                ));
+            }
+        } catch (mysqli_sql_exception $e) {
+            throw new ConnectionException('Failed to configure MySQL connection: ' . $e->getMessage(), 0, $e);
         }
 
         $this->connections[\spl_object_id($connection)] = $connection;
@@ -387,7 +436,7 @@ final class MysqliAsyncClient implements MysqlLink
             $ready = \mysqli_poll($read, $error, $reject, 0, self::POLL_BLOCK_MICROSECONDS);
         } catch (mysqli_sql_exception $e) {
             foreach ($links as $connection) {
-                $this->failPending($connection, new SqlConnectionException('mysqli_poll() failed: ' . $e->getMessage(), 0, $e));
+                $this->failPending($connection, new ConnectionException('mysqli_poll() failed: ' . $e->getMessage(), 0, $e));
             }
 
             return;
@@ -400,13 +449,13 @@ final class MysqliAsyncClient implements MysqlLink
         }
 
         foreach ($error as $connection) {
-            $this->failPending($connection, new SqlConnectionException(
+            $this->failPending($connection, new ConnectionException(
                 'MySQL connection error: ' . ($connection->error !== '' ? $connection->error : 'unknown'),
             ));
         }
 
         foreach ($reject as $connection) {
-            $this->failPending($connection, new SqlConnectionException('mysqli_poll() rejected a connection with a pending query'));
+            $this->failPending($connection, new ConnectionException('mysqli_poll() rejected a connection with a pending query'));
         }
 
         if ($this->pending === [] && $this->pollTimerId !== null) {
@@ -425,25 +474,24 @@ final class MysqliAsyncClient implements MysqlLink
 
         unset($this->pending[$id]);
         [$suspension] = $entry;
-        $this->lastUsedAt = \time();
 
         try {
             /** @var \mysqli_result|bool $result reap_async_query() returns true for queries without result sets; some stubs type only mysqli_result|false. */
             $result = $connection->reap_async_query();
         } catch (mysqli_sql_exception $e) {
-            $suspension->throw(new SqlQueryError($e->getMessage(), '', $e));
+            $suspension->throw(new QueryException($e->getMessage(), '', $e));
 
             return;
         }
 
         if ($result === false) {
-            $suspension->throw(new SqlQueryError($connection->error !== '' ? $connection->error : 'Query failed', ''));
+            $suspension->throw(new QueryException($connection->error !== '' ? $connection->error : 'Query failed'));
 
             return;
         }
 
         if ($result === true) {
-            $suspension->resume(new BufferedMysqlResult(
+            $suspension->resume(new BufferedSqlResult(
                 [],
                 $connection->affected_rows >= 0 ? (int) $connection->affected_rows : null,
                 null,
@@ -455,7 +503,7 @@ final class MysqliAsyncClient implements MysqlLink
 
         /** @var list<array<string, mixed>> $rows */
         $rows = $result->fetch_all(\MYSQLI_ASSOC);
-        $buffered = new BufferedMysqlResult($rows, (int) $result->num_rows, $result->field_count, null);
+        $buffered = new BufferedSqlResult($rows, (int) $result->num_rows, $result->field_count);
         $result->free();
 
         $suspension->resume($buffered);

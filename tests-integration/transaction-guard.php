@@ -11,10 +11,10 @@ declare(strict_types=1);
 
 require __DIR__ . '/../vendor/autoload.php';
 
-use Amp\Mysql\MysqlConfig;
-use Amp\Mysql\MysqlConnectionPool;
-use Amp\Postgres\PostgresConfig;
-use Amp\Postgres\PostgresConnectionPool;
+use Kinetis\Persistence\Driver\MysqliAsyncClient;
+use Kinetis\Persistence\Driver\PdoMysqlClient;
+use Kinetis\Persistence\Driver\PdoPgsqlClient;
+use Kinetis\Persistence\Driver\PgsqlAsyncClient;
 use Kinetis\Persistence\TransactionGuard;
 use Psr\Log\NullLogger;
 
@@ -70,20 +70,25 @@ function run(string $backend, $link): void
     echo "\n";
 }
 
-$mysql = new MysqlConnectionPool(new MysqlConfig(
-    host: getenv('MYSQL_HOST') ?: '127.0.0.1',
-    user: getenv('MYSQL_USER') ?: 'testuser',
-    password: getenv('MYSQL_PASSWORD') ?: 'testpass',
-    database: getenv('MYSQL_DATABASE') ?: 'testdb',
-));
-$postgres = new PostgresConnectionPool(new PostgresConfig(
-    host: getenv('POSTGRES_HOST') ?: '127.0.0.1',
-    user: getenv('POSTGRES_USER') ?: 'testuser',
-    password: getenv('POSTGRES_PASSWORD') ?: 'testpass',
-    database: getenv('POSTGRES_DATABASE') ?: 'testdb',
-));
+$mysqlArgs = [
+    getenv('MYSQL_HOST') ?: '127.0.0.1',
+    getenv('MYSQL_USER') ?: 'testuser',
+    getenv('MYSQL_PASSWORD') ?: 'testpass',
+    getenv('MYSQL_DATABASE') ?: 'testdb',
+    (int) (getenv('MYSQL_PORT') ?: 3306),
+];
+$postgresArgs = [
+    getenv('POSTGRES_HOST') ?: '127.0.0.1',
+    getenv('POSTGRES_USER') ?: 'testuser',
+    getenv('POSTGRES_PASSWORD') ?: 'testpass',
+    getenv('POSTGRES_DATABASE') ?: 'testdb',
+    (int) (getenv('POSTGRES_PORT') ?: 5432),
+];
 
-run('MySQL', $mysql);
-run('Postgres', $postgres);
+// Every driver must satisfy the guard identically.
+run('MySQL/mysqli-async', new MysqliAsyncClient(...$mysqlArgs));
+run('MySQL/pdo', new PdoMysqlClient(...$mysqlArgs));
+run('Postgres/pgsql-async', new PgsqlAsyncClient(...$postgresArgs));
+run('Postgres/pdo', new PdoPgsqlClient(...$postgresArgs));
 
 echo "ALL CHECKS PASSED\n";
