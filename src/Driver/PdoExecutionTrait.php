@@ -78,7 +78,8 @@ trait PdoExecutionTrait
                 $statement = $this->statements[$sql] = $prepared;
             }
 
-            $statement->execute(\array_values($params));
+            PdoParamBinder::bind($statement, $params);
+            $statement->execute();
         } catch (PDOException $e) {
             throw new QueryException($e->getMessage(), $sql, $e);
         }

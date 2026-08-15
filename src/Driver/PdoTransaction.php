@@ -54,7 +54,8 @@ abstract class PdoTransaction extends AbstractTransaction
                 throw new QueryException('Failed to prepare query', $sql);
             }
 
-            $statement->execute(\array_values($params));
+            PdoParamBinder::bind($statement, $params);
+            $statement->execute();
         } catch (PDOException $e) {
             throw new QueryException($e->getMessage(), $sql, $e);
         }
