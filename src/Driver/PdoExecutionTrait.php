@@ -25,6 +25,20 @@ trait PdoExecutionTrait
 
     private bool $closed = false;
 
+    /**
+     * Prepared statements memoized per SQL string for this connection's
+     * lifetime. Both PDO clients run with native (non-emulated)
+     * prepares, where every prepare() is its own server round trip —
+     * without reuse, execute() pays two round trips per query and a
+     * hot loop issuing the same statement N times costs 2N instead of
+     * N+1. MySQL and Postgres both scope prepared statements to the
+     * connection, which is exactly this cache's lifetime; close()
+     * drops it with the connection.
+     *
+     * @var array<string, PDOStatement>
+     */
+    private array $statements = [];
+
     public function query(string $sql): SqlResult
     {
         try {
@@ -43,10 +57,25 @@ trait PdoExecutionTrait
     public function execute(string $sql, array $params = []): SqlResult
     {
         try {
-            $statement = $this->connection()->prepare($sql);
+            $statement = $this->statements[$sql] ?? null;
 
-            if ($statement === false) {
-                throw new QueryException('Failed to prepare query', $sql);
+            if ($statement === null) {
+                // An unbounded cache would let a workload that
+                // interpolates values into its SQL (instead of binding)
+                // grow it without limit; a full reset is crude but keeps
+                // the steady state — a bounded set of parameterized
+                // statements — at exactly one prepare each.
+                if (\count($this->statements) >= 256) {
+                    $this->statements = [];
+                }
+
+                $prepared = $this->connection()->prepare($sql);
+
+                if ($prepared === false) {
+                    throw new QueryException('Failed to prepare query', $sql);
+                }
+
+                $statement = $this->statements[$sql] = $prepared;
             }
 
             $statement->execute(\array_values($params));
@@ -60,6 +89,7 @@ trait PdoExecutionTrait
     public function close(): void
     {
         $this->closed = true;
+        $this->statements = [];
         $this->pdo = null;
     }
 
