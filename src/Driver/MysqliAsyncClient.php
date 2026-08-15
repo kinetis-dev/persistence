@@ -107,6 +107,40 @@ final class MysqliAsyncClient implements MysqlLink
         $this->waiters = new SplQueue();
     }
 
+    /**
+     * Opens pooled connections now instead of on first use — up to
+     * $connections of them (the whole pool when null), never beyond
+     * {@see ConnectionOptions::$maxConnections}.
+     *
+     * Load-bearing under a persistent worker, not just a latency
+     * optimization: mysqli_poll() is select()-based in C, so it rejects
+     * any connection whose file descriptor is numbered >= FD_SETSIZE
+     * (1024) — a ceiling no event-loop extension can lift, since it
+     * lives inside ext-mysqli itself. Connections opened at worker boot,
+     * before request traffic exists, claim low descriptor numbers and
+     * keep them for the process's lifetime; connections opened lazily
+     * under load are numbered after every open client socket and can
+     * land past the ceiling. Keep the total mysqli connections per
+     * process (worker threads x maxConnections) under ~1000 for the
+     * same reason.
+     *
+     * Throws {@see ConnectionException} if the server is unreachable —
+     * a warmed pool is an explicit request, so failing to open it is an
+     * error, not a silent fall-back to lazy connecting.
+     */
+    public function warmUp(?int $connections = null): void
+    {
+        if ($this->closed) {
+            throw new ConnectionException('The client has been closed');
+        }
+
+        $target = \min($connections ?? $this->options->maxConnections, $this->options->maxConnections);
+
+        while (\count($this->connections) < $target) {
+            $this->idle[] = $this->connect();
+        }
+    }
+
     public function query(string $sql): SqlResult
     {
         return $this->runPooled(fn (mysqli $connection): SqlResult => $this->queryOn($connection, $sql));

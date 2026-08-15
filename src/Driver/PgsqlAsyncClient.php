@@ -72,6 +72,31 @@ final class PgsqlAsyncClient implements PostgresLink
         $this->waiters = new SplQueue();
     }
 
+    /**
+     * Opens pooled connections now instead of on first use — up to
+     * $connections of them (the whole pool when null), never beyond
+     * {@see ConnectionOptions::$maxConnections}. Saves the first
+     * requests' connection handshakes; this driver has no descriptor-
+     * numbering constraint (its sockets are watched through the event
+     * loop, where an extension backend lifts the select() limit —
+     * unlike {@see MysqliAsyncClient::warmUp()}, where warming is
+     * load-bearing).
+     *
+     * Throws {@see ConnectionException} if the server is unreachable —
+     * a warmed pool is an explicit request, so failing to open it is an
+     * error, not a silent fall-back to lazy connecting.
+     */
+    public function warmUp(?int $connections = null): void
+    {
+        $this->assertOpen();
+
+        $target = \min($connections ?? $this->options->maxConnections, $this->options->maxConnections);
+
+        while (\count($this->connections) < $target) {
+            $this->idle[] = $this->connect();
+        }
+    }
+
     public function query(string $sql): SqlResult
     {
         return $this->runPooled(fn (PgsqlAsyncConnection $connection): SqlResult => $this->queryOn($connection, $sql));

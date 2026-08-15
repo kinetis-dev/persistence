@@ -355,6 +355,85 @@ final class SqlConnectionFactoryTest extends TestCase
         self::assertSame(5, self::maxConnectionsOf(SqlConnectionFactory::fromConfig($config, 'analytics')));
     }
 
+    #[\PHPUnit\Framework\Attributes\RequiresPhpExtension('mysqli')]
+    public function test_warm_connections_pool_option_connects_at_construction(): void
+    {
+        // Port 1 refuses immediately: reaching the network at all is
+        // what proves warming fires inside fromConfig() rather than
+        // deferring to the first query.
+        $config = new Config([
+            'DB_CONNECTION' => 'mysql',
+            'DB_DRIVER' => 'native',
+            'DB_PASSWORD' => 'secret',
+            'DB_HOST' => '127.0.0.1',
+            'DB_PORT' => '1',
+        ]);
+
+        $this->expectException(\Kinetis\Persistence\Exception\ConnectionException::class);
+
+        SqlConnectionFactory::fromConfig($config, poolOptions: ['warmConnections' => 1]);
+    }
+
+    #[\PHPUnit\Framework\Attributes\RequiresPhpExtension('mysqli')]
+    public function test_db_warm_connections_env_key_triggers_warming(): void
+    {
+        $config = new Config([
+            'DB_CONNECTION' => 'mysql',
+            'DB_DRIVER' => 'native',
+            'DB_PASSWORD' => 'secret',
+            'DB_HOST' => '127.0.0.1',
+            'DB_PORT' => '1',
+            'DB_WARM_CONNECTIONS' => '1',
+        ]);
+
+        $this->expectException(\Kinetis\Persistence\Exception\ConnectionException::class);
+
+        SqlConnectionFactory::fromConfig($config);
+    }
+
+    public function test_no_connection_is_opened_without_a_warming_request(): void
+    {
+        // Same unreachable endpoint as the warming tests: constructing
+        // without warmConnections must not touch the network.
+        $config = new Config([
+            'DB_CONNECTION' => 'mysql',
+            'DB_DRIVER' => 'native',
+            'DB_PASSWORD' => 'secret',
+            'DB_HOST' => '127.0.0.1',
+            'DB_PORT' => '1',
+        ]);
+
+        self::assertInstanceOf(MysqliAsyncClient::class, SqlConnectionFactory::fromConfig($config));
+    }
+
+    public function test_an_explicit_warm_pool_option_wins_over_the_warm_env_key(): void
+    {
+        // The env key asks for warming against an unreachable server;
+        // the explicit zero must override it, so construction succeeds.
+        $config = new Config([
+            'DB_CONNECTION' => 'mysql',
+            'DB_DRIVER' => 'native',
+            'DB_PASSWORD' => 'secret',
+            'DB_HOST' => '127.0.0.1',
+            'DB_PORT' => '1',
+            'DB_WARM_CONNECTIONS' => '1',
+        ]);
+
+        $client = SqlConnectionFactory::fromConfig($config, poolOptions: ['warmConnections' => 0]);
+
+        self::assertInstanceOf(MysqliAsyncClient::class, $client);
+    }
+
+    public function test_warm_up_on_a_closed_client_throws(): void
+    {
+        $client = new MysqliAsyncClient('127.0.0.1', 'u', 'p', 'db', 1, new ConnectionOptions());
+        $client->close();
+
+        $this->expectException(\Kinetis\Persistence\Exception\ConnectionException::class);
+
+        $client->warmUp(1);
+    }
+
     private static function maxConnectionsOf(object $client): int
     {
         $property = new \ReflectionProperty($client, 'options');

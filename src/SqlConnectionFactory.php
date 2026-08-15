@@ -54,6 +54,10 @@ use Kinetis\Persistence\Driver\PgsqlAsyncClient;
  *
  * $poolOptions['maxConnections'] caps the async drivers' fan-out width
  * (the PDO drivers are a single connection, trivially within any cap).
+ * $poolOptions['warmConnections'] (or the `DB_WARM_CONNECTIONS` key)
+ * opens that many connections at construction instead of on first use —
+ * see each driver's warmUp() for why a persistent worker should warm
+ * its mysqli pool at boot.
  */
 final class SqlConnectionFactory
 {
@@ -106,12 +110,27 @@ final class SqlConnectionFactory
 
         $options = self::buildOptions($config, $connection, $poolOptions);
 
-        return match (true) {
+        $client = match (true) {
             $dialect === 'mysql' && $driver === 'native' => new MysqliAsyncClient($host, $user, $password, $database, $port, $options),
             $dialect === 'mysql' => new PdoMysqlClient($host, $user, $password, $database, $port, $options),
             $driver === 'native' => new PgsqlAsyncClient($host, $user, $password, $database, $port, $options),
             default => new PdoPgsqlClient($host, $user, $password, $database, $port, $options),
         };
+
+        // An explicit code-level poolOption wins over the env key, same
+        // as maxConnections. Warming connects right here, so a wrong
+        // DB config fails at boot instead of on the first query — and
+        // under FrankenPHP worker mode the boot-time connect is what
+        // keeps mysqli fds numbered below FD_SETSIZE (see
+        // MysqliAsyncClient::warmUp()).
+        $envWarm = $config->get(Config::scopedKey('DB_WARM_CONNECTIONS', $connection));
+        $warmConnections = $poolOptions['warmConnections'] ?? ($envWarm !== null ? (int) $envWarm : 0);
+
+        if ((int) $warmConnections > 0) {
+            $client->warmUp((int) $warmConnections);
+        }
+
+        return $client;
     }
 
     /**

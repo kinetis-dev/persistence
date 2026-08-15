@@ -39,6 +39,21 @@ trait PdoExecutionTrait
      */
     private array $statements = [];
 
+    /**
+     * Opens the connection now instead of on first use. A PDO client is
+     * a single connection, so $connections beyond 1 changes nothing —
+     * the parameter exists so every driver shares one warmUp()
+     * signature and callers never branch on driver type.
+     *
+     * Throws on an unreachable server — a warmed connection is an
+     * explicit request, so failing to open it is an error, not a
+     * silent fall-back to lazy connecting.
+     */
+    public function warmUp(?int $connections = null): void
+    {
+        $this->connection();
+    }
+
     public function query(string $sql): SqlResult
     {
         try {

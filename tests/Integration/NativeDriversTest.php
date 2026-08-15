@@ -271,6 +271,43 @@ final class NativeDriversTest extends DriverCase
         $fresh->close();
     }
 
+    #[DataProvider('drivers')]
+    public function test_warm_up_opens_connections_before_any_query(string $driver): void
+    {
+        $db = self::makeClient($driver);
+
+        \assert(\method_exists($db, 'warmUp'));
+        $db->warmUp(3);
+
+        // Reflection over a query so the assertion can't be satisfied
+        // by lazy connecting: the connections must exist already.
+        if ($db instanceof MysqliAsyncClient || $db instanceof PgsqlAsyncClient) {
+            $connections = new \ReflectionProperty($db, 'connections')->getValue($db);
+            self::assertIsArray($connections);
+            self::assertCount(3, $connections);
+        } else {
+            self::assertNotNull(new \ReflectionProperty($db, 'pdo')->getValue($db));
+        }
+
+        // A warmed pool still serves queries normally.
+        self::assertSame(1, (int) $db->query('SELECT 1 AS one')->fetchRow()['one']);
+        $db->close();
+    }
+
+    #[DataProvider('nativeDrivers')]
+    public function test_warm_up_clamps_to_max_connections(string $driver): void
+    {
+        $db = self::makeClient($driver, new ConnectionOptions(maxConnections: 2));
+
+        \assert($db instanceof MysqliAsyncClient || $db instanceof PgsqlAsyncClient);
+        $db->warmUp(10);
+
+        $connections = new \ReflectionProperty($db, 'connections')->getValue($db);
+        self::assertIsArray($connections);
+        self::assertCount(2, $connections);
+        $db->close();
+    }
+
     /**
      * @return iterable<string, array{string}>
      */
