@@ -12,7 +12,7 @@ use InvalidArgumentException;
  * plus a translated legacy DB_OPTIONS string) and handed to whichever
  * driver gets constructed — each driver owns the translation from these
  * canonical fields to its native mechanism (connection-string keys for
- * amphp/libpq, mysqli_options()/set_charset() for mysqli, DSN keys and
+ * libpq, mysqli_options()/set_charset() for mysqli, DSN keys and
  * attributes for PDO).
  *
  * A field the selected driver cannot honor is a construction-time
@@ -20,9 +20,8 @@ use InvalidArgumentException;
  * silent ignore. The supported matrix lives in docs/persistence.md.
  *
  * $extraConnectionString is the raw escape hatch for backends whose
- * native configuration surface *is* a free-form key/value string (amphp's
- * config parsers, libpq) — drivers without such a surface (mysqli, PDO
- * MySQL) reject it loudly.
+ * native configuration surface *is* a free-form key/value string (libpq)
+ * — drivers without such a surface (mysqli, PDO MySQL) reject it loudly.
  */
 final readonly class ConnectionOptions
 {

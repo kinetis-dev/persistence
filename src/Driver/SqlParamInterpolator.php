@@ -8,8 +8,8 @@ use Kinetis\Persistence\Exception\QueryException;
 use Closure;
 
 /**
- * Rewrites the "?" positional placeholders Kinetis's query builder (and
- * amphp's own execute() contract) uses into whatever a native driver
+ * Rewrites the "?" positional placeholders Kinetis's query builder and
+ * the SqlLink execute() contract use into whatever a native driver
  * needs: an escaped literal for mysqli (whose async mode has no
  * server-side bind step), or "$1".."$n" for pg_send_query_params.
  *
