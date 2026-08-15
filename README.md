@@ -9,7 +9,7 @@
 </p>
 
 <p align="center">
-  <a href="https://packagist.org/packages/kinetis/persistence"><img src="https://img.shields.io/packagist/v/kinetis/persistence" alt="Packagist Version"></a>
+  <a href="https://packagist.org/packages/kinetis/persistence"><img src="https://img.shields.io/packagist/v/kinetis/persistence?label=version" alt="Packagist Version"></a>
   <a href="https://packagist.org/packages/kinetis/persistence"><img src="https://img.shields.io/packagist/dt/kinetis/persistence" alt="Packagist Downloads"></a>
   <a href="https://packagist.org/packages/kinetis/persistence"><img src="https://img.shields.io/packagist/php-v/kinetis/persistence" alt="PHP Version"></a>
   <a href="https://packagist.org/packages/kinetis/persistence"><img src="https://img.shields.io/packagist/l/kinetis/persistence" alt="License"></a>
