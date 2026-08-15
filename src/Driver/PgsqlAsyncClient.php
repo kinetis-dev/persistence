@@ -313,7 +313,11 @@ final class PgsqlAsyncClient implements PostgresLink
 
             $converters[$name] = match ($type) {
                 'int2', 'int4', 'int8', 'oid' => static fn (?string $v): ?int => $v === null ? null : (int) $v,
-                'float4', 'float8', 'numeric' => static fn (?string $v): ?float => $v === null ? null : (float) $v,
+                // numeric (DECIMAL) deliberately stays a string: it is
+                // arbitrary-precision, a float cast silently loses
+                // digits, and every other driver (PDO both dialects,
+                // mysqli) returns DECIMAL columns as strings.
+                'float4', 'float8' => static fn (?string $v): ?float => $v === null ? null : (float) $v,
                 'bool' => static fn (?string $v): ?bool => $v === null ? null : $v === 't',
                 default => null,
             };

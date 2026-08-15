@@ -274,7 +274,14 @@ final class MysqliAsyncClient implements MysqlLink
                 $value === null => 'NULL',
                 \is_bool($value) => $value ? '1' : '0',
                 \is_int($value) => (string) $value,
-                \is_float($value) => \sprintf('%.17G', $value),
+                // A plain cast, never sprintf('%G'): printf-family float
+                // formatting honors setlocale(LC_NUMERIC, ...), and a
+                // locale with a comma decimal separator would emit "1,5"
+                // — two SQL expressions, silently wrong results. PHP's
+                // float-to-string cast is locale-independent and
+                // round-trip exact.
+                \is_float($value) && \is_finite($value) => (string) $value,
+                \is_float($value) => throw new QueryException('Cannot bind a non-finite float (INF/NAN) as a SQL parameter'),
                 \is_string($value) => "'" . $connection->real_escape_string($value) . "'",
                 default => throw new QueryException(
                     'Unsupported parameter type ' . \get_debug_type($value) . ' — only scalars and null can be bound',
@@ -433,7 +440,17 @@ final class MysqliAsyncClient implements MysqlLink
             return;
         }
 
-        if ($ready !== false && $ready > 0) {
+        if ($ready === false) {
+            // On failure mysqli_poll() leaves the by-ref arrays in an
+            // unspecified state — acting on them could fail every
+            // pending query against still-healthy connections. Fail
+            // only what poll itself reported nothing about, loudly.
+            $this->failAll($links, new ConnectionException('mysqli_poll() failed'));
+
+            return;
+        }
+
+        if ($ready > 0) {
             foreach ($read as $connection) {
                 $this->finishPending($connection);
             }

@@ -204,4 +204,42 @@ final class NativeDriversTest extends DriverCase
         self::assertSame(1, (int) $db->query('SELECT 1 AS one')->fetchRow()['one']);
         $db->close();
     }
+
+    #[DataProvider('drivers')]
+    public function test_decimal_columns_stay_strings_on_every_driver(string $driver): void
+    {
+        $db = self::makeClient($driver);
+
+        $row = $db->query("SELECT CAST('1234567890.12345678901234567890' AS DECIMAL(40,20)) AS d")->fetchRow();
+
+        self::assertNotNull($row);
+        // DECIMAL/NUMERIC is arbitrary-precision — a float cast would
+        // silently lose digits, so every driver returns it verbatim.
+        self::assertSame('1234567890.12345678901234567890', $row['d']);
+
+        $db->close();
+    }
+
+    #[DataProvider('drivers')]
+    public function test_float_parameters_bind_exactly_even_under_a_comma_decimal_locale(string $driver): void
+    {
+        $previous = \setlocale(\LC_NUMERIC, '0');
+        // Best effort: the locale may not exist on this machine; the
+        // exact-roundtrip assertions below hold either way.
+        \setlocale(\LC_NUMERIC, 'de_DE.UTF-8', 'de_DE', 'de_DE.utf8');
+
+        try {
+            $db = self::makeClient($driver);
+
+            $row = $db->execute('SELECT CAST(? AS FLOAT) + CAST(? AS FLOAT) AS v', [1.5, 0.25])->fetchRow();
+            self::assertNotNull($row);
+            self::assertEqualsWithDelta(1.75, (float) $row['v'], 1e-9);
+
+            $db->close();
+        } finally {
+            if ($previous !== false) {
+                \setlocale(\LC_NUMERIC, $previous);
+            }
+        }
+    }
 }
