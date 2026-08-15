@@ -97,11 +97,13 @@ final class PgsqlAsyncClient implements PostgresLink
         }
     }
 
+    #[\Override]
     public function query(string $sql): SqlResult
     {
         return $this->runPooled(fn (PgsqlAsyncConnection $connection): SqlResult => $this->queryOn($connection, $sql));
     }
 
+    #[\Override]
     public function execute(string $sql, array $params = []): SqlResult
     {
         return $this->runPooled(
@@ -109,6 +111,7 @@ final class PgsqlAsyncClient implements PostgresLink
         );
     }
 
+    #[\Override]
     public function beginTransaction(): PostgresTransaction
     {
         for ($attempt = 0; ; $attempt++) {
@@ -136,6 +139,7 @@ final class PgsqlAsyncClient implements PostgresLink
         }
     }
 
+    #[\Override]
     public function close(): void
     {
         if ($this->closed) {
@@ -158,6 +162,7 @@ final class PgsqlAsyncClient implements PostgresLink
         }
     }
 
+    #[\Override]
     public function isClosed(): bool
     {
         return $this->closed;

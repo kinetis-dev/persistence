@@ -24,16 +24,19 @@ final class PgsqlAsyncTransaction extends AbstractTransaction implements Postgre
         private readonly Closure $releaseConnection,
     ) {}
 
+    #[\Override]
     protected function run(string $sql): SqlResult
     {
         return $this->client->queryOn($this->connection, $sql);
     }
 
+    #[\Override]
     protected function runWithParams(string $sql, array $params): SqlResult
     {
         return $this->client->executeOn($this->connection, $sql, $params);
     }
 
+    #[\Override]
     protected function finish(bool $commit): void
     {
         try {
@@ -43,6 +46,7 @@ final class PgsqlAsyncTransaction extends AbstractTransaction implements Postgre
         }
     }
 
+    #[\Override]
     protected function driverLabel(): string
     {
         return 'the native pgsql driver';

@@ -29,26 +29,31 @@ final class BufferedSqlResult implements SqlResult, IteratorAggregate
         private readonly ?int $lastInsertId = null,
     ) {}
 
+    #[\Override]
     public function getIterator(): Traversable
     {
         yield from $this->rows;
     }
 
+    #[\Override]
     public function fetchRow(): ?array
     {
         return $this->rows[$this->cursor++] ?? null;
     }
 
+    #[\Override]
     public function getRowCount(): ?int
     {
         return $this->rowCount;
     }
 
+    #[\Override]
     public function getColumnCount(): ?int
     {
         return $this->columnCount;
     }
 
+    #[\Override]
     public function getLastInsertId(): ?int
     {
         return $this->lastInsertId;

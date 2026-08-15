@@ -141,11 +141,13 @@ final class MysqliAsyncClient implements MysqlLink
         }
     }
 
+    #[\Override]
     public function query(string $sql): SqlResult
     {
         return $this->runPooled(fn (mysqli $connection): SqlResult => $this->queryOn($connection, $sql));
     }
 
+    #[\Override]
     public function execute(string $sql, array $params = []): SqlResult
     {
         return $this->runPooled(
@@ -153,6 +155,7 @@ final class MysqliAsyncClient implements MysqlLink
         );
     }
 
+    #[\Override]
     public function beginTransaction(): MysqlTransaction
     {
         for ($attempt = 0; ; $attempt++) {
@@ -180,6 +183,7 @@ final class MysqliAsyncClient implements MysqlLink
         }
     }
 
+    #[\Override]
     public function close(): void
     {
         if ($this->closed) {
@@ -213,6 +217,7 @@ final class MysqliAsyncClient implements MysqlLink
         $this->idle = [];
     }
 
+    #[\Override]
     public function isClosed(): bool
     {
         return $this->closed;

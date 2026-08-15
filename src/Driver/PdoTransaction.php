@@ -30,6 +30,7 @@ abstract class PdoTransaction extends AbstractTransaction
         private readonly Closure $buildResult,
     ) {}
 
+    #[\Override]
     protected function run(string $sql): SqlResult
     {
         try {
@@ -45,6 +46,7 @@ abstract class PdoTransaction extends AbstractTransaction
         return ($this->buildResult)($statement);
     }
 
+    #[\Override]
     protected function runWithParams(string $sql, array $params): SqlResult
     {
         try {
@@ -63,6 +65,7 @@ abstract class PdoTransaction extends AbstractTransaction
         return ($this->buildResult)($statement);
     }
 
+    #[\Override]
     protected function finish(bool $commit): void
     {
         try {
@@ -72,6 +75,7 @@ abstract class PdoTransaction extends AbstractTransaction
         }
     }
 
+    #[\Override]
     protected function driverLabel(): string
     {
         return 'the PDO driver';

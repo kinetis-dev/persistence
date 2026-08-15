@@ -20,4 +20,16 @@
             <directory name="vendor" />
         </ignoreFiles>
     </projectFiles>
+
+    <!--
+        The driver extensions are `suggest`ed, not required, so Psalm
+        only auto-loads their stubs when the analyzing PHP has them
+        loaded. Reference them explicitly instead: analysis must give
+        the same answer in a bare CLI container as on a fully-equipped
+        host.
+    -->
+    <stubs>
+        <file name="vendor/vimeo/psalm/stubs/extensions/mysqli.phpstub" />
+        <file name="stubs/driver-extensions.phpstub" />
+    </stubs>
 </psalm>

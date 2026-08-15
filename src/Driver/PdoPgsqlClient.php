@@ -46,12 +46,14 @@ final class PdoPgsqlClient implements PostgresLink
         $this->options->rejectUnsupported('PDO pgsql', ['collation', 'compression']);
     }
 
+    #[\Override]
     public function beginTransaction(): PostgresTransaction
     {
         return new PdoPgsqlTransaction($this->beginPdoTransaction(), $this->buildResult(...));
     }
 
     /** @internal Also used by {@see PdoPgsqlTransaction} via closure. */
+    #[\Override]
     public function buildResult(PDOStatement $statement): BufferedSqlResult
     {
         /** @var list<array<string, mixed>> $rows */
@@ -71,6 +73,7 @@ final class PdoPgsqlClient implements PostgresLink
      * trait method calls across the trait boundary will see this as
      * unused; it isn't.
      */
+    #[\Override]
     private function connection(): PDO
     {
         if ($this->closed) {

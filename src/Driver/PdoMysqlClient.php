@@ -50,12 +50,14 @@ final class PdoMysqlClient implements MysqlLink
         $this->options->rejectUnsupported('PDO mysql', ['sslMode', 'applicationName', 'extraConnectionString']);
     }
 
+    #[\Override]
     public function beginTransaction(): MysqlTransaction
     {
         return new PdoMysqlTransaction($this->beginPdoTransaction(), $this->buildResult(...));
     }
 
     /** @internal Also used by {@see PdoMysqlTransaction} via closure. */
+    #[\Override]
     public function buildResult(PDOStatement $statement): BufferedSqlResult
     {
         /** @var list<array<string, mixed>> $rows */
@@ -70,6 +72,7 @@ final class PdoMysqlClient implements MysqlLink
         );
     }
 
+    #[\Override]
     private function connection(): PDO
     {
         if ($this->closed) {

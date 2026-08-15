@@ -22,6 +22,7 @@ abstract class AbstractTransaction implements SqlTransaction
 {
     private bool $active = true;
 
+    #[\Override]
     public function query(string $sql): SqlResult
     {
         $this->assertActive();
@@ -29,6 +30,7 @@ abstract class AbstractTransaction implements SqlTransaction
         return $this->run($sql);
     }
 
+    #[\Override]
     public function execute(string $sql, array $params = []): SqlResult
     {
         $this->assertActive();
@@ -36,11 +38,13 @@ abstract class AbstractTransaction implements SqlTransaction
         return $this->runWithParams($sql, $params);
     }
 
+    #[\Override]
     public function beginTransaction(): SqlTransaction
     {
         throw new TransactionException('Nested transactions are not supported by ' . $this->driverLabel());
     }
 
+    #[\Override]
     public function commit(): void
     {
         $this->assertActive();
@@ -48,6 +52,7 @@ abstract class AbstractTransaction implements SqlTransaction
         $this->finish(true);
     }
 
+    #[\Override]
     public function rollback(): void
     {
         $this->assertActive();
@@ -55,11 +60,13 @@ abstract class AbstractTransaction implements SqlTransaction
         $this->finish(false);
     }
 
+    #[\Override]
     public function isActive(): bool
     {
         return $this->active;
     }
 
+    #[\Override]
     public function close(): void
     {
         if ($this->active) {
@@ -67,6 +74,7 @@ abstract class AbstractTransaction implements SqlTransaction
         }
     }
 
+    #[\Override]
     public function isClosed(): bool
     {
         return !$this->active;
