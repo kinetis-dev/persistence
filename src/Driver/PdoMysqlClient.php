@@ -22,6 +22,12 @@ use PDOStatement;
  * connection doing native-speed blocking work; `concurrently()` fan-outs
  * still produce correct results — the queries simply run sequentially,
  * which for sub-millisecond queries is the faster trade.
+ *
+ * The single lazily-opened connection lives for the client's lifetime
+ * and is never reopened — matching the boot-and-die FPM model this
+ * driver targets, where the process (and client) die with the request.
+ * A long-lived process needing reconnection should run the {@see MysqliAsyncClient}
+ * driver instead, whose pool discards and replaces dead connections.
  */
 final class PdoMysqlClient implements MysqlLink
 {

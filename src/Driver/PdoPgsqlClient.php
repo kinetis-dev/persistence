@@ -20,6 +20,12 @@ use PDOStatement;
  * PDO's pgsql DSN is handed to libpq as a connection string, so the
  * canonical options (and the free-form extra string) translate directly
  * to libpq keys.
+ *
+ * The single lazily-opened connection lives for the client's lifetime
+ * and is never reopened — matching the boot-and-die FPM model this
+ * driver targets, where the process (and client) die with the request.
+ * A long-lived process needing reconnection should run the {@see PgsqlAsyncClient}
+ * driver instead, whose pool discards and replaces dead connections.
  */
 final class PdoPgsqlClient implements PostgresLink
 {

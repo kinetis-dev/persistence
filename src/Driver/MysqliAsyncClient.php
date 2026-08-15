@@ -330,13 +330,18 @@ final class MysqliAsyncClient implements MysqlLink
             $broken = true;
         }
 
-        if ($broken || $this->closed) {
+        if (($broken || $this->closed) && isset($this->connections[$id])) {
+            // Only tear down a connection this pool still tracks:
+            // close() already closed everything it held — including a
+            // connection pinned by an in-flight transaction, whose
+            // finish() releases it afterwards — and mysqli throws on a
+            // second close.
             unset($this->connections[$id]);
 
             try {
                 $connection->close();
             } catch (mysqli_sql_exception) {
-                // Best-effort.
+                // Already gone server-side; closing is best-effort.
             }
         }
 

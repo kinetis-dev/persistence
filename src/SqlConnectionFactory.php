@@ -144,8 +144,14 @@ final class SqlConnectionFactory
             ?? $legacy['connectTimeout']
             ?? null;
 
+        // An explicit code-level poolOption wins; the connection-scoped
+        // env key covers deployments tuning pool width without editing
+        // bootstrap code (see docs/performance-tuning.md for sizing).
+        $envMaxConnections = $config->get(Config::scopedKey('DB_MAX_CONNECTIONS', $connection));
+
         /** @var int $maxConnections */
-        $maxConnections = $poolOptions['maxConnections'] ?? 8;
+        $maxConnections = $poolOptions['maxConnections']
+            ?? ($envMaxConnections !== null ? (int) $envMaxConnections : 8);
 
         return new ConnectionOptions(
             charset: $config->get(Config::scopedKey('DB_CHARSET', $connection)) ?? $legacy['charset'] ?? null,

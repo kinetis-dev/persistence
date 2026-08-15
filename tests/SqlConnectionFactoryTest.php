@@ -305,4 +305,63 @@ final class SqlConnectionFactoryTest extends TestCase
         self::assertInstanceOf(ConnectionOptions::class, $options);
         self::assertSame(3, $options->maxConnections);
     }
+
+    public function test_db_max_connections_env_key_sizes_the_pool(): void
+    {
+        $config = new Config([
+            'DB_CONNECTION' => 'mysql',
+            'DB_DRIVER' => 'native',
+            'DB_PASSWORD' => 'secret',
+            'DB_MAX_CONNECTIONS' => '12',
+        ]);
+
+        self::assertSame(12, self::maxConnectionsOf(SqlConnectionFactory::fromConfig($config)));
+    }
+
+    public function test_an_explicit_pool_option_wins_over_the_env_key(): void
+    {
+        $config = new Config([
+            'DB_CONNECTION' => 'mysql',
+            'DB_DRIVER' => 'native',
+            'DB_PASSWORD' => 'secret',
+            'DB_MAX_CONNECTIONS' => '12',
+        ]);
+
+        $client = SqlConnectionFactory::fromConfig($config, poolOptions: ['maxConnections' => 3]);
+
+        self::assertSame(3, self::maxConnectionsOf($client));
+    }
+
+    public function test_pool_width_defaults_when_neither_env_nor_pool_option_is_set(): void
+    {
+        $config = new Config([
+            'DB_CONNECTION' => 'mysql',
+            'DB_DRIVER' => 'native',
+            'DB_PASSWORD' => 'secret',
+        ]);
+
+        self::assertSame(8, self::maxConnectionsOf(SqlConnectionFactory::fromConfig($config)));
+    }
+
+    public function test_db_max_connections_is_scoped_per_named_connection(): void
+    {
+        $config = new Config([
+            'DB_ANALYTICS_CONNECTION' => 'mysql',
+            'DB_ANALYTICS_DRIVER' => 'native',
+            'DB_ANALYTICS_PASSWORD' => 'secret',
+            'DB_ANALYTICS_MAX_CONNECTIONS' => '5',
+        ]);
+
+        self::assertSame(5, self::maxConnectionsOf(SqlConnectionFactory::fromConfig($config, 'analytics')));
+    }
+
+    private static function maxConnectionsOf(object $client): int
+    {
+        $property = new \ReflectionProperty($client, 'options');
+
+        /** @var ConnectionOptions $options */
+        $options = $property->getValue($client);
+
+        return $options->maxConnections;
+    }
 }

@@ -38,6 +38,10 @@ use Throwable;
  * Intended primarily for persistent runtimes (FrankenPHP worker mode)
  * where connections outlive requests; under PHP-FPM prefer
  * {@see PdoPgsqlClient} via SqlConnectionFactory's driver selection.
+ *
+ * Opening a connection (pool fill only) uses the blocking pg_connect();
+ * queries themselves never block. PGSQL_CONNECT_ASYNC exists should
+ * connect latency under load ever warrant a handshake state machine.
  */
 final class PgsqlAsyncClient implements PostgresLink
 {
@@ -374,9 +378,16 @@ final class PgsqlAsyncClient implements PostgresLink
         $id = \spl_object_id($connection);
 
         if ($connection->broken || $this->closed) {
-            unset($this->connections[$id]);
-            EventLoop::cancel($connection->watcherId);
-            \pg_close($connection->handle);
+            // Only tear down a connection this pool still tracks:
+            // close() already cancelled and closed everything it held —
+            // including a connection pinned by an in-flight transaction,
+            // whose finish() releases it afterwards — and closing a
+            // libpq handle twice is an error, not a no-op.
+            if (isset($this->connections[$id])) {
+                unset($this->connections[$id]);
+                EventLoop::cancel($connection->watcherId);
+                \pg_close($connection->handle);
+            }
 
             if (!$this->waiters->isEmpty()) {
                 $this->waiters->dequeue()->resume(null);

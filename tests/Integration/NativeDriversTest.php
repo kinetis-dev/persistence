@@ -242,4 +242,41 @@ final class NativeDriversTest extends DriverCase
             }
         }
     }
+
+    /**
+     * close() with a transaction still in flight tears the pinned
+     * connection down immediately; the transaction's own finish() runs
+     * afterwards and must not tear it down a second time — closing a
+     * libpq/mysqli handle twice is an error, not a no-op.
+     */
+    #[DataProvider('nativeDrivers')]
+    public function test_closing_the_client_with_an_open_transaction_stays_clean(string $driver): void
+    {
+        $db = self::makeClient($driver);
+        $tx = $db->beginTransaction();
+
+        $db->close();
+
+        try {
+            $tx->rollback();
+            self::fail('Expected the rollback on a closed client to throw.');
+        } catch (ConnectionException) {
+            // The ROLLBACK statement cannot be dispatched — expected.
+        }
+
+        self::assertTrue($tx->isClosed());
+
+        $fresh = self::makeClient($driver);
+        self::assertSame(1, (int) $fresh->query('SELECT 1 AS one')->fetchRow()['one']);
+        $fresh->close();
+    }
+
+    /**
+     * @return iterable<string, array{string}>
+     */
+    public static function nativeDrivers(): iterable
+    {
+        yield 'mysqli-async' => ['mysqli-async'];
+        yield 'pgsql-async' => ['pgsql-async'];
+    }
 }
