@@ -49,8 +49,10 @@ use Throwable;
  *
  * A dispatch-phase failure whose error indicates the pooled connection
  * itself died is retried once on a fresh connection — safe, because the
- * statement never reached the server (see {@see StaleConnectionException}).
- * Reap-phase failures are never retried.
+ * statement never reached the server. Reap-phase failures are never
+ * retried, so a connection that dies while pooled costs the caller one
+ * QueryException before the retry path takes over; see
+ * {@see StaleConnectionException} for the full sequence.
  *
  * execute() realizes parameter binding as escaped client-side
  * interpolation (mysqli has no async prepared-statement execution);

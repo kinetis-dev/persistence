@@ -32,8 +32,10 @@ use Throwable;
  * One query is in flight per connection;
  * {@see ConnectionOptions::$maxConnections} bounds fan-out width, and
  * callers beyond it wait for a connection like any pool. Dispatch-phase
- * failures on a dead pooled connection are retried once on a fresh one
- * (see {@see StaleConnectionException}); reap-phase failures never are.
+ * failures on a dead pooled connection are retried once on a fresh one;
+ * reap-phase failures never are, so a connection that dies while pooled
+ * costs the caller one QueryException before the retry path takes over
+ * — see {@see StaleConnectionException} for the full sequence.
  *
  * Intended primarily for persistent runtimes (FrankenPHP worker mode)
  * where connections outlive requests; under PHP-FPM prefer
@@ -268,7 +270,12 @@ final class PgsqlAsyncClient implements PostgresLink
             return;
         }
 
-        if (\pg_connection_busy($connection->handle)) {
+        // Suppressed: on a connection the server has already torn down,
+        // libpq emits a "cannot set connection to blocking mode" notice
+        // here before the loop below settles the waiter with a real
+        // exception. Same @-plus-clean-exception handling pg_connect()
+        // and mysqli's real_connect() already get.
+        if (@\pg_connection_busy($connection->handle)) {
             return; // Result not complete yet; wait for more input.
         }
 
