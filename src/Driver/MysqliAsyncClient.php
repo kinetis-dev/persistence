@@ -62,6 +62,8 @@ final class MysqliAsyncClient implements MysqlLink
 {
     private const int POLL_BLOCK_MICROSECONDS = 1000;
 
+    private const string CLOSED_MESSAGE = 'The client has been closed';
+
     /** Client-side errno values meaning "the connection is gone" (CR_CONNECTION_ERROR, CR_SERVER_GONE_ERROR, CR_SERVER_LOST). */
     private const array GONE_ERRNOS = [2002, 2006, 2013];
 
@@ -131,7 +133,7 @@ final class MysqliAsyncClient implements MysqlLink
     public function warmUp(?int $connections = null): void
     {
         if ($this->closed) {
-            throw new ConnectionException('The client has been closed');
+            throw new ConnectionException(self::CLOSED_MESSAGE);
         }
 
         $target = \min($connections ?? $this->options->maxConnections, $this->options->maxConnections);
@@ -258,7 +260,7 @@ final class MysqliAsyncClient implements MysqlLink
     public function queryOn(mysqli $connection, string $sql): SqlResult
     {
         if ($this->closed) {
-            throw new ConnectionException('The client has been closed');
+            throw new ConnectionException(self::CLOSED_MESSAGE);
         }
 
         try {
@@ -333,7 +335,7 @@ final class MysqliAsyncClient implements MysqlLink
     {
         while (true) {
             if ($this->closed) {
-                throw new ConnectionException('The client has been closed');
+                throw new ConnectionException(self::CLOSED_MESSAGE);
             }
 
             $connection = \array_pop($this->idle);
