@@ -22,7 +22,9 @@ final class PgsqlAsyncTransaction extends AbstractTransaction implements Postgre
         private readonly PgsqlAsyncClient $client,
         private readonly PgsqlAsyncConnection $connection,
         private readonly Closure $releaseConnection,
-    ) {}
+    ) {
+        $this->telemetryBegin();
+    }
 
     #[\Override]
     protected function run(string $sql): SqlResult

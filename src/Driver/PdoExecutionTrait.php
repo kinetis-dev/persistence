@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace Kinetis\Persistence\Driver;
 
+use Kinetis\Instrumentation\Telemetry;
+use Kinetis\Persistence\Contract\MysqlLink;
+use Throwable;
 use Kinetis\Persistence\Contract\SqlResult;
 use Kinetis\Persistence\Exception\QueryException;
 use PDO;
@@ -56,6 +59,12 @@ trait PdoExecutionTrait
 
     public function query(string $sql): SqlResult
     {
+        $telemetry = Telemetry::global();
+        $token = $telemetry->queryDispatched($this instanceof MysqlLink ? 'mysql' : 'postgresql', $sql);
+        // A single blocking connection: dispatch and server start are the
+        // same moment here.
+        $telemetry->queryServerStarted($token);
+
         try {
             $statement = $this->connection()->query($sql);
 
@@ -63,14 +72,27 @@ trait PdoExecutionTrait
                 throw new QueryException('Query failed', $sql);
             }
         } catch (PDOException $e) {
-            throw new QueryException($e->getMessage(), $sql, $e);
+            $failure = new QueryException($e->getMessage(), $sql, $e);
+            $telemetry->queryReaped($token, $failure);
+
+            throw $failure;
+        } catch (Throwable $e) {
+            $telemetry->queryReaped($token, $e);
+
+            throw $e;
         }
+
+        $telemetry->queryReaped($token, null);
 
         return $this->buildResult($statement);
     }
 
     public function execute(string $sql, array $params = []): SqlResult
     {
+        $telemetry = Telemetry::global();
+        $token = $telemetry->queryDispatched($this instanceof MysqlLink ? 'mysql' : 'postgresql', $sql);
+        $telemetry->queryServerStarted($token);
+
         try {
             $statement = $this->statements[$sql] ?? null;
 
@@ -96,8 +118,17 @@ trait PdoExecutionTrait
             PdoParamBinder::bind($statement, $params);
             $statement->execute();
         } catch (PDOException $e) {
-            throw new QueryException($e->getMessage(), $sql, $e);
+            $failure = new QueryException($e->getMessage(), $sql, $e);
+            $telemetry->queryReaped($token, $failure);
+
+            throw $failure;
+        } catch (Throwable $e) {
+            $telemetry->queryReaped($token, $e);
+
+            throw $e;
         }
+
+        $telemetry->queryReaped($token, null);
 
         return $this->buildResult($statement);
     }

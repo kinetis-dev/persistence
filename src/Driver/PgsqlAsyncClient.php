@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kinetis\Persistence\Driver;
 
+use Kinetis\Instrumentation\Telemetry;
 use Closure;
 use Kinetis\Persistence\ConnectionOptions;
 use Kinetis\Persistence\Contract\PostgresLink;
@@ -102,13 +103,14 @@ final class PgsqlAsyncClient implements PostgresLink
     #[\Override]
     public function query(string $sql): SqlResult
     {
-        return $this->runPooled(fn (PgsqlAsyncConnection $connection): SqlResult => $this->queryOn($connection, $sql));
+        return $this->runPooled($sql, fn (PgsqlAsyncConnection $connection): SqlResult => $this->queryOn($connection, $sql));
     }
 
     #[\Override]
     public function execute(string $sql, array $params = []): SqlResult
     {
         return $this->runPooled(
+            $sql,
             fn (PgsqlAsyncConnection $connection): SqlResult => $this->executeOn($connection, $sql, $params),
         );
     }
@@ -173,20 +175,36 @@ final class PgsqlAsyncClient implements PostgresLink
     /**
      * @param Closure(PgsqlAsyncConnection): SqlResult $operation
      */
-    private function runPooled(Closure $operation): SqlResult
+    private function runPooled(string $sql, Closure $operation): SqlResult
     {
-        for ($attempt = 0; ; $attempt++) {
-            $connection = $this->acquire();
+        $telemetry = Telemetry::global();
+        $token = $telemetry->queryDispatched('postgresql', $sql);
 
-            try {
-                return $operation($connection);
-            } catch (StaleConnectionException $e) {
-                if ($attempt >= 1) {
-                    throw new ConnectionException('Postgres connection lost during dispatch (after retry)', 0, $e);
+        try {
+            for ($attempt = 0; ; $attempt++) {
+                $connection = $this->acquire();
+                // The gap between queryDispatched and here is time spent
+                // waiting for a free pooled connection. Fires again on a
+                // stale-connection retry, marking the second attempt.
+                $telemetry->queryServerStarted($token);
+
+                try {
+                    $result = $operation($connection);
+                    $telemetry->queryReaped($token, null);
+
+                    return $result;
+                } catch (StaleConnectionException $e) {
+                    if ($attempt >= 1) {
+                        throw new ConnectionException('Postgres connection lost during dispatch (after retry)', 0, $e);
+                    }
+                } finally {
+                    $this->release($connection);
                 }
-            } finally {
-                $this->release($connection);
             }
+        } catch (Throwable $e) {
+            $telemetry->queryReaped($token, $e);
+
+            throw $e;
         }
     }
 

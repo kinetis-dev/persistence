@@ -24,7 +24,9 @@ final class MysqliAsyncTransaction extends AbstractTransaction implements MysqlT
         private readonly MysqliAsyncClient $client,
         private readonly mysqli $connection,
         private readonly Closure $releaseConnection,
-    ) {}
+    ) {
+        $this->telemetryBegin();
+    }
 
     #[\Override]
     protected function run(string $sql): SqlResult

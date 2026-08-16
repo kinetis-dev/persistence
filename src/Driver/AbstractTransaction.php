@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Kinetis\Persistence\Driver;
 
+use Kinetis\Instrumentation\Telemetry;
+use Kinetis\Persistence\Contract\MysqlTransaction;
 use Kinetis\Persistence\Contract\SqlResult;
 use Kinetis\Persistence\Contract\SqlTransaction;
 use Kinetis\Persistence\Exception\TransactionException;
@@ -21,6 +23,20 @@ use Kinetis\Persistence\Exception\TransactionException;
 abstract class AbstractTransaction implements SqlTransaction
 {
     private bool $active = true;
+
+    private mixed $telemetryToken = null;
+
+    /**
+     * Marks the transaction's begin moment for instrumentation — called
+     * from each concrete constructor, since PHP never runs a parent
+     * constructor implicitly.
+     */
+    protected function telemetryBegin(): void
+    {
+        $this->telemetryToken = Telemetry::global()->transactionStarted(
+            $this instanceof MysqlTransaction ? 'mysql' : 'postgresql',
+        );
+    }
 
     #[\Override]
     public function query(string $sql): SqlResult
@@ -49,7 +65,12 @@ abstract class AbstractTransaction implements SqlTransaction
     {
         $this->assertActive();
         $this->active = false;
-        $this->finish(true);
+
+        try {
+            $this->finish(true);
+        } finally {
+            Telemetry::global()->transactionEnded($this->telemetryToken, 'commit');
+        }
     }
 
     #[\Override]
@@ -57,7 +78,12 @@ abstract class AbstractTransaction implements SqlTransaction
     {
         $this->assertActive();
         $this->active = false;
-        $this->finish(false);
+
+        try {
+            $this->finish(false);
+        } finally {
+            Telemetry::global()->transactionEnded($this->telemetryToken, 'rollback');
+        }
     }
 
     #[\Override]

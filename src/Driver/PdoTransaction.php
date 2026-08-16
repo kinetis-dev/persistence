@@ -28,7 +28,9 @@ abstract class PdoTransaction extends AbstractTransaction
     public function __construct(
         private readonly PDO $pdo,
         private readonly Closure $buildResult,
-    ) {}
+    ) {
+        $this->telemetryBegin();
+    }
 
     #[\Override]
     protected function run(string $sql): SqlResult

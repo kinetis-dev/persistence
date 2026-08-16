@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kinetis\Persistence\Driver;
 
+use Kinetis\Instrumentation\Telemetry;
 use Closure;
 use Kinetis\Persistence\ConnectionOptions;
 use Kinetis\Persistence\Contract\MysqlLink;
@@ -148,13 +149,14 @@ final class MysqliAsyncClient implements MysqlLink
     #[\Override]
     public function query(string $sql): SqlResult
     {
-        return $this->runPooled(fn (mysqli $connection): SqlResult => $this->queryOn($connection, $sql));
+        return $this->runPooled($sql, fn (mysqli $connection): SqlResult => $this->queryOn($connection, $sql));
     }
 
     #[\Override]
     public function execute(string $sql, array $params = []): SqlResult
     {
         return $this->runPooled(
+            $sql,
             fn (mysqli $connection): SqlResult => $this->queryOn($connection, $this->interpolate($connection, $sql, $params)),
         );
     }
@@ -233,22 +235,38 @@ final class MysqliAsyncClient implements MysqlLink
      *
      * @param Closure(mysqli): SqlResult $operation
      */
-    private function runPooled(Closure $operation): SqlResult
+    private function runPooled(string $sql, Closure $operation): SqlResult
     {
-        for ($attempt = 0; ; $attempt++) {
-            $connection = $this->acquire();
+        $telemetry = Telemetry::global();
+        $token = $telemetry->queryDispatched('mysql', $sql);
 
-            try {
-                return $operation($connection);
-            } catch (StaleConnectionException $e) {
-                if ($attempt >= 1) {
-                    throw new ConnectionException('MySQL connection lost during dispatch (after retry)', 0, $e);
+        try {
+            for ($attempt = 0; ; $attempt++) {
+                $connection = $this->acquire();
+                // The gap between queryDispatched and here is time spent
+                // waiting for a free pooled connection. Fires again on a
+                // stale-connection retry, marking the second attempt.
+                $telemetry->queryServerStarted($token);
+
+                try {
+                    $result = $operation($connection);
+                    $telemetry->queryReaped($token, null);
+
+                    return $result;
+                } catch (StaleConnectionException $e) {
+                    if ($attempt >= 1) {
+                        throw new ConnectionException('MySQL connection lost during dispatch (after retry)', 0, $e);
+                    }
+                    // Marked broken already; release() discards it and the
+                    // loop retries on a fresh connection.
+                } finally {
+                    $this->release($connection);
                 }
-                // Marked broken already; release() discards it and the
-                // loop retries on a fresh connection.
-            } finally {
-                $this->release($connection);
             }
+        } catch (Throwable $e) {
+            $telemetry->queryReaped($token, $e);
+
+            throw $e;
         }
     }
 
