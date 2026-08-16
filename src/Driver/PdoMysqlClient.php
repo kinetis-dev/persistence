@@ -44,10 +44,10 @@ final class PdoMysqlClient implements MysqlLink
         ?ConnectionOptions $options = null,
     ) {
         $this->options = $options ?? new ConnectionOptions();
-        // MySQL TLS certificate plumbing is not modeled yet;
         // applicationName is a Postgres concept; free-form
         // connection-string text has no PDO-MySQL equivalent.
-        $this->options->rejectUnsupported('PDO mysql', ['sslMode', 'applicationName', 'extraConnectionString']);
+        $this->options->rejectUnsupported('PDO mysql', ['applicationName', 'extraConnectionString']);
+        $this->options->validateMysqlSsl('PDO mysql');
     }
 
     #[\Override]
@@ -96,6 +96,22 @@ final class PdoMysqlClient implements MysqlLink
 
         if ($this->options->compression === true) {
             $attributes[PDO::MYSQL_ATTR_COMPRESS] = true;
+        }
+
+        if ($this->options->wantsTls()) {
+            // "require" encrypts without verifying the peer;
+            // "verify-ca"/"verify-full" verify against the CA bundle.
+            // mysqlnd's verification also checks the hostname, so
+            // verify-ca behaves as verify-full here — stricter than
+            // asked, never looser.
+            //
+            // The SSL_CA attribute is always present: mysqlnd only
+            // initiates TLS when a substantive SSL attribute is set —
+            // VERIFY_SERVER_CERT alone leaves the connection in
+            // plaintext — and an empty CA path is the minimal trigger
+            // for the no-verification mode.
+            $attributes[PDO::MYSQL_ATTR_SSL_VERIFY_SERVER_CERT] = $this->options->sslMode !== 'require';
+            $attributes[PDO::MYSQL_ATTR_SSL_CA] = $this->options->sslCa ?? '';
         }
 
         try {

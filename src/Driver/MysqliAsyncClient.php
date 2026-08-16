@@ -100,10 +100,10 @@ final class MysqliAsyncClient implements MysqlLink
         ?ConnectionOptions $options = null,
     ) {
         $this->options = $options ?? new ConnectionOptions();
-        // MySQL TLS needs certificate plumbing this driver doesn't model
-        // yet; applicationName is a Postgres concept; free-form
+        // applicationName is a Postgres concept; free-form
         // connection-string text has no mysqli equivalent.
-        $this->options->rejectUnsupported('native mysqli', ['sslMode', 'applicationName', 'extraConnectionString']);
+        $this->options->rejectUnsupported('native mysqli', ['applicationName', 'extraConnectionString']);
+        $this->options->validateMysqlSsl('native mysqli');
         $this->waiters = new SplQueue();
     }
 
@@ -412,13 +412,36 @@ final class MysqliAsyncClient implements MysqlLink
                 $connection->options(\MYSQLI_OPT_CONNECT_TIMEOUT, $options->connectTimeout);
             }
 
-            $connection->real_connect(
+            $flags = $options->compression === true ? \MYSQLI_CLIENT_COMPRESS : 0;
+
+            if ($options->wantsTls()) {
+                // "require" encrypts without verifying the peer;
+                // "verify-ca"/"verify-full" verify against the CA bundle.
+                // mysqlnd's verification also checks the hostname, so
+                // verify-ca behaves as verify-full here — stricter than
+                // asked, never looser.
+                $connection->ssl_set(null, null, $options->sslCa, null, null);
+                $flags |= \MYSQLI_CLIENT_SSL;
+
+                if ($options->sslMode === 'require') {
+                    $flags |= \MYSQLI_CLIENT_SSL_DONT_VERIFY_SERVER_CERT;
+                } else {
+                    $connection->options(\MYSQLI_OPT_SSL_VERIFY_SERVER_CERT, 1);
+                }
+            }
+
+            // The "@" mirrors pg_connect()'s treatment in the pgsql
+            // driver: a refused handshake (a TLS certificate failure,
+            // for one) otherwise emits a PHP warning alongside the
+            // mysqli_sql_exception this catch converts — the
+            // ConnectionException is the one voice for connect failures.
+            @$connection->real_connect(
                 $this->host,
                 $this->user,
                 $this->password,
                 $this->database,
                 $this->port,
-                flags: $options->compression === true ? \MYSQLI_CLIENT_COMPRESS : 0,
+                flags: $flags,
             );
         } catch (mysqli_sql_exception $e) {
             throw new ConnectionException('Failed to connect to MySQL: ' . $e->getMessage(), 0, $e);

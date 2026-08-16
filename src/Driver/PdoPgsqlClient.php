@@ -94,6 +94,10 @@ final class PdoPgsqlClient implements PostgresLink
             $dsn .= ";sslmode={$this->options->sslMode}";
         }
 
+        if ($this->options->sslCa !== null) {
+            $dsn .= ";sslrootcert={$this->options->sslCa}";
+        }
+
         if ($this->options->connectTimeout !== null) {
             $dsn .= ";connect_timeout={$this->options->connectTimeout}";
         }

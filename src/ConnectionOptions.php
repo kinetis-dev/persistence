@@ -27,10 +27,14 @@ final readonly class ConnectionOptions
 {
     private const string IDENTIFIER_PATTERN = '/^[A-Za-z0-9_]+$/';
 
+    /** libpq's sslmode vocabulary — the superset every driver validates against. */
+    private const array SSL_MODES = ['disable', 'allow', 'prefer', 'require', 'verify-ca', 'verify-full'];
+
     public function __construct(
         public ?string $charset = null,
         public ?string $collation = null,
         public ?string $sslMode = null,
+        public ?string $sslCa = null,
         public ?int $connectTimeout = null,
         public ?string $applicationName = null,
         public ?bool $compression = null,
@@ -48,12 +52,64 @@ final readonly class ConnectionOptions
             }
         }
 
+        if ($sslMode !== null && !\in_array($sslMode, self::SSL_MODES, true)) {
+            throw new InvalidArgumentException(
+                'ConnectionOptions $sslMode must be one of ' . \implode('|', self::SSL_MODES) . ", got \"{$sslMode}\".",
+            );
+        }
+
+        if ($sslCa !== null && $sslCa === '') {
+            throw new InvalidArgumentException('ConnectionOptions $sslCa must be a file path, not an empty string.');
+        }
+
         if ($connectTimeout !== null && $connectTimeout < 1) {
             throw new InvalidArgumentException('ConnectionOptions $connectTimeout must be a positive number of seconds.');
         }
 
         if ($maxConnections < 1) {
             throw new InvalidArgumentException('ConnectionOptions $maxConnections must be at least 1.');
+        }
+    }
+
+    /**
+     * Whether TLS verification modes are asked for at all — drivers use
+     * this instead of re-deriving "disable means the same as unset".
+     */
+    public function wantsTls(): bool
+    {
+        return $this->sslMode !== null && $this->sslMode !== 'disable';
+    }
+
+    /**
+     * The MySQL drivers' TLS profile check, at construction: MySQL clients
+     * have no opportunistic TLS, verification needs a CA to verify
+     * against, and a CA alongside a non-verifying mode would be silently
+     * ignored — each of those is a loud error here rather than a
+     * connection that quietly means something else.
+     */
+    public function validateMysqlSsl(string $driverLabel): void
+    {
+        if ($this->sslMode === 'allow' || $this->sslMode === 'prefer') {
+            throw new InvalidArgumentException(
+                "The {$driverLabel} driver has no opportunistic TLS: \$sslMode \"{$this->sslMode}\" "
+                . 'is libpq-only. Use "disable", "require", "verify-ca", or "verify-full".',
+            );
+        }
+
+        $verifying = $this->sslMode === 'verify-ca' || $this->sslMode === 'verify-full';
+
+        if ($verifying && $this->sslCa === null) {
+            throw new InvalidArgumentException(
+                "The {$driverLabel} driver needs \$sslCa (a CA bundle path) for \$sslMode \"{$this->sslMode}\" — "
+                . 'there is nothing to verify the server certificate against without one.',
+            );
+        }
+
+        if (!$verifying && $this->sslCa !== null) {
+            throw new InvalidArgumentException(
+                "The {$driverLabel} driver would silently ignore \$sslCa under \$sslMode "
+                . '"' . ($this->sslMode ?? 'unset') . '" — set $sslMode to "verify-ca" or "verify-full", or unset $sslCa.',
+            );
         }
     }
 
@@ -72,6 +128,7 @@ final readonly class ConnectionOptions
                 'charset' => $this->charset !== null,
                 'collation' => $this->collation !== null,
                 'sslMode' => $this->sslMode !== null,
+                'sslCa' => $this->sslCa !== null,
                 'connectTimeout' => $this->connectTimeout !== null,
                 'applicationName' => $this->applicationName !== null,
                 'compression' => $this->compression !== null,

@@ -72,10 +72,8 @@ final class DriverConstructionTest extends TestCase
     {
         // The documented support matrix, inverted: each driver x each
         // option it must reject.
-        yield 'mysqli rejects sslMode' => [MysqliAsyncClient::class, new ConnectionOptions(sslMode: 'require')];
         yield 'mysqli rejects applicationName' => [MysqliAsyncClient::class, new ConnectionOptions(applicationName: 'x')];
         yield 'mysqli rejects extraConnectionString' => [MysqliAsyncClient::class, new ConnectionOptions(extraConnectionString: 'a=b')];
-        yield 'pdo-mysql rejects sslMode' => [PdoMysqlClient::class, new ConnectionOptions(sslMode: 'require')];
         yield 'pdo-mysql rejects applicationName' => [PdoMysqlClient::class, new ConnectionOptions(applicationName: 'x')];
         yield 'pdo-mysql rejects extraConnectionString' => [PdoMysqlClient::class, new ConnectionOptions(extraConnectionString: 'a=b')];
         yield 'pgsql rejects collation' => [PgsqlAsyncClient::class, new ConnectionOptions(collation: 'foo_ci')];
@@ -111,6 +109,18 @@ final class DriverConstructionTest extends TestCase
             PdoMysqlClient::class,
             new ConnectionOptions(charset: 'utf8mb4', collation: 'utf8mb4_unicode_ci', connectTimeout: 3, compression: true),
         ];
+        yield 'mysqli accepts require and both verify ssl modes' => [
+            MysqliAsyncClient::class,
+            new ConnectionOptions(sslMode: 'verify-ca', sslCa: '/certs/ca.pem'),
+        ];
+        yield 'pdo-mysql accepts require and both verify ssl modes' => [
+            PdoMysqlClient::class,
+            new ConnectionOptions(sslMode: 'verify-full', sslCa: '/certs/ca.pem'),
+        ];
+        yield 'pgsql accepts a ca bundle path' => [
+            PgsqlAsyncClient::class,
+            new ConnectionOptions(sslMode: 'verify-full', sslCa: '/certs/ca.pem'),
+        ];
         yield 'pgsql accepts charset/ssl/timeout/appname/extra' => [
             PgsqlAsyncClient::class,
             new ConnectionOptions(charset: 'UTF8', sslMode: 'require', connectTimeout: 3, applicationName: 'x', extraConnectionString: 'a=b'),
@@ -130,5 +140,62 @@ final class DriverConstructionTest extends TestCase
         $client = new $driverClass('h', 'u', 'p', 'db', 3306, $options);
 
         self::assertSame($options, self::property($client, 'options'));
+    }
+
+    /**
+     * @return iterable<string, array{class-string, ConnectionOptions, string}>
+     */
+    public static function invalidMysqlSslProfiles(): iterable
+    {
+        yield 'mysqli rejects opportunistic allow' => [
+            MysqliAsyncClient::class,
+            new ConnectionOptions(sslMode: 'allow'),
+            'The native mysqli driver has no opportunistic TLS: $sslMode "allow" is libpq-only. Use "disable", "require", "verify-ca", or "verify-full".',
+        ];
+        yield 'pdo-mysql rejects opportunistic prefer' => [
+            PdoMysqlClient::class,
+            new ConnectionOptions(sslMode: 'prefer'),
+            'The PDO mysql driver has no opportunistic TLS: $sslMode "prefer" is libpq-only. Use "disable", "require", "verify-ca", or "verify-full".',
+        ];
+        yield 'mysqli rejects verify-ca without a ca bundle' => [
+            MysqliAsyncClient::class,
+            new ConnectionOptions(sslMode: 'verify-ca'),
+            'The native mysqli driver needs $sslCa (a CA bundle path) for $sslMode "verify-ca" — there is nothing to verify the server certificate against without one.',
+        ];
+        yield 'pdo-mysql rejects verify-full without a ca bundle' => [
+            PdoMysqlClient::class,
+            new ConnectionOptions(sslMode: 'verify-full'),
+            'The PDO mysql driver needs $sslCa (a CA bundle path) for $sslMode "verify-full" — there is nothing to verify the server certificate against without one.',
+        ];
+        yield 'mysqli rejects a ca bundle under require' => [
+            MysqliAsyncClient::class,
+            new ConnectionOptions(sslMode: 'require', sslCa: '/certs/ca.pem'),
+            'The native mysqli driver would silently ignore $sslCa under $sslMode "require" — set $sslMode to "verify-ca" or "verify-full", or unset $sslCa.',
+        ];
+        yield 'pdo-mysql rejects a ca bundle with no ssl mode at all' => [
+            PdoMysqlClient::class,
+            new ConnectionOptions(sslCa: '/certs/ca.pem'),
+            'The PDO mysql driver would silently ignore $sslCa under $sslMode "unset" — set $sslMode to "verify-ca" or "verify-full", or unset $sslCa.',
+        ];
+    }
+
+    /**
+     * @param class-string $driverClass
+     */
+    #[DataProvider('invalidMysqlSslProfiles')]
+    public function test_mysql_drivers_reject_incoherent_tls_profiles(string $driverClass, ConnectionOptions $options, string $message): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage($message);
+        new $driverClass('h', 'u', 'p', 'db', 3306, $options);
+    }
+
+    public function test_pgsql_drivers_keep_accepting_opportunistic_ssl_modes(): void
+    {
+        // libpq's allow/prefer stay valid where libpq is the backend.
+        $options = new ConnectionOptions(sslMode: 'prefer');
+
+        self::assertSame($options, self::property(new PgsqlAsyncClient('h', 'u', 'p', 'db', 5432, $options), 'options'));
+        self::assertSame($options, self::property(new PdoPgsqlClient('h', 'u', 'p', 'db', 5432, $options), 'options'));
     }
 }

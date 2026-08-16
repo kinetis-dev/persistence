@@ -434,6 +434,52 @@ final class SqlConnectionFactoryTest extends TestCase
         $client->warmUp(1);
     }
 
+    public function test_db_ssl_ca_reaches_the_driver_and_legacy_sslrootcert_translates(): void
+    {
+        $direct = SqlConnectionFactory::fromConfig(new Config([
+            'DB_CONNECTION' => 'pgsql', 'DB_DRIVER' => 'native', 'DB_PASSWORD' => 's',
+            'DB_SSLMODE' => 'verify-full', 'DB_SSL_CA' => '/certs/ca.pem',
+        ]));
+
+        $options = self::property($direct, 'options');
+        self::assertInstanceOf(ConnectionOptions::class, $options);
+        self::assertSame('/certs/ca.pem', $options->sslCa);
+
+        // The legacy DB_OPTIONS spelling lands on the same canonical
+        // field instead of passing through as a raw libpq key.
+        $legacy = SqlConnectionFactory::fromConfig(new Config([
+            'DB_CONNECTION' => 'pgsql', 'DB_DRIVER' => 'native', 'DB_PASSWORD' => 's',
+            'DB_OPTIONS' => 'sslmode=verify-full sslrootcert=/certs/ca.pem',
+        ]));
+
+        $options = self::property($legacy, 'options');
+        self::assertInstanceOf(ConnectionOptions::class, $options);
+        self::assertSame('/certs/ca.pem', $options->sslCa);
+        self::assertSame('', $options->extraConnectionString);
+    }
+
+    public function test_mysql_drivers_construct_with_a_verifying_tls_profile(): void
+    {
+        $config = new Config([
+            'DB_CONNECTION' => 'mysql', 'DB_DRIVER' => 'native', 'DB_PASSWORD' => 's',
+            'DB_SSLMODE' => 'verify-ca', 'DB_SSL_CA' => '/certs/ca.pem',
+        ]);
+
+        self::assertInstanceOf(MysqliAsyncClient::class, SqlConnectionFactory::fromConfig($config));
+    }
+
+    public function test_mysql_drivers_reject_a_libpq_only_ssl_mode(): void
+    {
+        $config = new Config([
+            'DB_CONNECTION' => 'mysql', 'DB_DRIVER' => 'native', 'DB_PASSWORD' => 's',
+            'DB_SSLMODE' => 'prefer',
+        ]);
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('no opportunistic TLS');
+        SqlConnectionFactory::fromConfig($config);
+    }
+
     private static function maxConnectionsOf(object $client): int
     {
         $property = new \ReflectionProperty($client, 'options');

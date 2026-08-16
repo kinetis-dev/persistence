@@ -22,17 +22,29 @@ final class ConnectionOptionsTest extends TestCase
     public function test_a_non_identifier_charset_is_rejected_naming_field_and_value(): void
     {
         $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('ConnectionOptions $charset must match');
-        $this->expectExceptionMessage('got "bad charset"');
+        $this->expectExceptionMessage('ConnectionOptions $charset must match /^[A-Za-z0-9_]+$/, got "bad charset".');
         new ConnectionOptions(charset: 'bad charset');
     }
 
     public function test_a_non_identifier_collation_is_rejected_naming_field_and_value(): void
     {
         $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('ConnectionOptions $collation must match');
-        $this->expectExceptionMessage('got "utf8mb4_unicode_ci; DROP"');
+        $this->expectExceptionMessage('ConnectionOptions $collation must match /^[A-Za-z0-9_]+$/, got "utf8mb4_unicode_ci; DROP".');
         new ConnectionOptions(collation: 'utf8mb4_unicode_ci; DROP');
+    }
+
+    public function test_an_unknown_ssl_mode_is_rejected_naming_the_vocabulary(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('ConnectionOptions $sslMode must be one of disable|allow|prefer|require|verify-ca|verify-full, got "mandatory".');
+        new ConnectionOptions(sslMode: 'mandatory');
+    }
+
+    public function test_an_empty_ssl_ca_path_is_rejected(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('ConnectionOptions $sslCa must be a file path, not an empty string.');
+        new ConnectionOptions(sslCa: '');
     }
 
     public function test_connect_timeout_boundary_one_second_is_accepted_zero_is_not(): void
@@ -61,6 +73,7 @@ final class ConnectionOptionsTest extends TestCase
         yield 'charset' => [new ConnectionOptions(charset: 'latin1')];
         yield 'collation' => [new ConnectionOptions(collation: 'latin1_swedish_ci')];
         yield 'sslMode' => [new ConnectionOptions(sslMode: 'require')];
+        yield 'sslCa' => [new ConnectionOptions(sslCa: '/certs/ca.pem')];
         yield 'connectTimeout' => [new ConnectionOptions(connectTimeout: 5)];
         yield 'applicationName' => [new ConnectionOptions(applicationName: 'myapp')];
         yield 'compression' => [new ConnectionOptions(compression: true)];
@@ -80,7 +93,7 @@ final class ConnectionOptionsTest extends TestCase
         \assert(\is_string($field));
 
         $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage("The test-driver driver does not support the \"{$field}\" connection option.");
+        $this->expectExceptionMessage("The test-driver driver does not support the \"{$field}\" connection option. Unset it, or select a driver that supports it (see docs/persistence.md for the matrix).");
         $options->rejectUnsupported('test-driver', [$field]);
     }
 
@@ -91,7 +104,7 @@ final class ConnectionOptionsTest extends TestCase
         \assert(\is_string($field));
 
         $others = \array_values(\array_diff(
-            ['charset', 'collation', 'sslMode', 'connectTimeout', 'applicationName', 'compression', 'extraConnectionString'],
+            ['charset', 'collation', 'sslMode', 'sslCa', 'connectTimeout', 'applicationName', 'compression', 'extraConnectionString'],
             [$field],
         ));
 
@@ -103,7 +116,7 @@ final class ConnectionOptionsTest extends TestCase
     {
         new ConnectionOptions()->rejectUnsupported(
             'test-driver',
-            ['charset', 'collation', 'sslMode', 'connectTimeout', 'applicationName', 'compression', 'extraConnectionString'],
+            ['charset', 'collation', 'sslMode', 'sslCa', 'connectTimeout', 'applicationName', 'compression', 'extraConnectionString'],
         );
         $this->addToAssertionCount(1);
     }

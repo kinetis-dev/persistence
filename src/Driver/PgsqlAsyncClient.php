@@ -458,6 +458,10 @@ final class PgsqlAsyncClient implements PostgresLink
             $connectionString .= ' sslmode=' . $quote($this->options->sslMode);
         }
 
+        if ($this->options->sslCa !== null) {
+            $connectionString .= ' sslrootcert=' . $quote($this->options->sslCa);
+        }
+
         if ($this->options->connectTimeout !== null) {
             $connectionString .= " connect_timeout={$this->options->connectTimeout}";
         }

@@ -37,7 +37,7 @@ use Kinetis\Persistence\Driver\PgsqlAsyncClient;
  *
  * Connection options are canonical and driver-neutral — see
  * {@see ConnectionOptions}. They come from discrete, connection-scoped
- * keys (`DB_CHARSET`, `DB_COLLATION`, `DB_SSLMODE`,
+ * keys (`DB_CHARSET`, `DB_COLLATION`, `DB_SSLMODE`, `DB_SSL_CA`,
  * `DB_CONNECT_TIMEOUT`, `DB_APP_NAME`, `DB_COMPRESSION`), each driver
  * translating them to its native mechanism, and rejecting — loudly, at
  * construction — any option it cannot honor.
@@ -68,6 +68,9 @@ final class SqlConnectionFactory
         'collate' => 'collation',
         'collation' => 'collation',
         'sslmode' => 'sslMode',
+        'sslrootcert' => 'sslCa',
+        'ssl_ca' => 'sslCa',
+        'ssl-ca' => 'sslCa',
         'connect_timeout' => 'connectTimeout',
         'application_name' => 'applicationName',
         'applicationname' => 'applicationName',
@@ -176,6 +179,7 @@ final class SqlConnectionFactory
             charset: $config->get(Config::scopedKey('DB_CHARSET', $connection)) ?? $legacy['charset'] ?? null,
             collation: $config->get(Config::scopedKey('DB_COLLATION', $connection)) ?? $legacy['collation'] ?? null,
             sslMode: $config->get(Config::scopedKey('DB_SSLMODE', $connection)) ?? $legacy['sslMode'] ?? null,
+            sslCa: $config->get(Config::scopedKey('DB_SSL_CA', $connection)) ?? $legacy['sslCa'] ?? null,
             connectTimeout: $connectTimeout !== null ? (int) $connectTimeout : null,
             applicationName: $config->get(Config::scopedKey('DB_APP_NAME', $connection)) ?? $legacy['applicationName'] ?? null,
             compression: $compression !== null ? \in_array(\strtolower((string) $compression), ['1', 'true', 'on', 'yes'], true) : null,
