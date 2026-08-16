@@ -38,7 +38,8 @@ use Kinetis\Persistence\Driver\PgsqlAsyncClient;
  * Connection options are canonical and driver-neutral — see
  * {@see ConnectionOptions}. They come from discrete, connection-scoped
  * keys (`DB_CHARSET`, `DB_COLLATION`, `DB_SSLMODE`, `DB_SSL_CA`,
- * `DB_CONNECT_TIMEOUT`, `DB_APP_NAME`, `DB_COMPRESSION`), each driver
+ * `DB_SSL_CERT`, `DB_SSL_KEY`, `DB_CONNECT_TIMEOUT`, `DB_APP_NAME`,
+ * `DB_COMPRESSION`), each driver
  * translating them to its native mechanism, and rejecting — loudly, at
  * construction — any option it cannot honor.
  *
@@ -71,6 +72,12 @@ final class SqlConnectionFactory
         'sslrootcert' => 'sslCa',
         'ssl_ca' => 'sslCa',
         'ssl-ca' => 'sslCa',
+        'sslcert' => 'sslCert',
+        'ssl_cert' => 'sslCert',
+        'ssl-cert' => 'sslCert',
+        'sslkey' => 'sslKey',
+        'ssl_key' => 'sslKey',
+        'ssl-key' => 'sslKey',
         'connect_timeout' => 'connectTimeout',
         'application_name' => 'applicationName',
         'applicationname' => 'applicationName',
@@ -185,6 +192,8 @@ final class SqlConnectionFactory
             compression: $compression !== null ? \in_array(\strtolower((string) $compression), ['1', 'true', 'on', 'yes'], true) : null,
             maxConnections: $maxConnections,
             extraConnectionString: \implode(' ', $extra),
+            sslCert: $config->get(Config::scopedKey('DB_SSL_CERT', $connection)) ?? $legacy['sslCert'] ?? null,
+            sslKey: $config->get(Config::scopedKey('DB_SSL_KEY', $connection)) ?? $legacy['sslKey'] ?? null,
         );
     }
 }

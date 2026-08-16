@@ -40,6 +40,8 @@ final readonly class ConnectionOptions
         public ?bool $compression = null,
         public int $maxConnections = 8,
         public string $extraConnectionString = '',
+        public ?string $sslCert = null,
+        public ?string $sslKey = null,
     ) {
         // charset/collation reach drivers as SQL fragments (SET NAMES) or
         // API calls — constrain them to identifier characters so a value
@@ -58,8 +60,30 @@ final readonly class ConnectionOptions
             );
         }
 
-        if ($sslCa !== null && $sslCa === '') {
-            throw new InvalidArgumentException('ConnectionOptions $sslCa must be a file path, not an empty string.');
+        foreach (['sslCa' => $sslCa, 'sslCert' => $sslCert, 'sslKey' => $sslKey] as $name => $value) {
+            if ($value === '') {
+                throw new InvalidArgumentException("ConnectionOptions \${$name} must be a file path, not an empty string.");
+            }
+        }
+
+        // A client certificate is only half of a keypair: mutual TLS
+        // needs both, and one alone is always a misconfiguration rather
+        // than a partial setup any driver could act on.
+        if (($sslCert === null) !== ($sslKey === null)) {
+            throw new InvalidArgumentException(
+                'ConnectionOptions $sslCert and $sslKey must be set together — a client certificate is '
+                . 'unusable without its private key, and vice versa.',
+            );
+        }
+
+        // Client certificates are presented during the TLS handshake, so
+        // without TLS they would be silently ignored.
+        if ($sslCert !== null && ($sslMode === null || $sslMode === 'disable')) {
+            throw new InvalidArgumentException(
+                'ConnectionOptions $sslCert/$sslKey need TLS: set $sslMode to "require", "verify-ca", '
+                . '"verify-full" (or libpq\'s "allow"/"prefer"), since a client certificate is only ever '
+                . 'presented during a TLS handshake.',
+            );
         }
 
         if ($connectTimeout !== null && $connectTimeout < 1) {
@@ -129,6 +153,8 @@ final readonly class ConnectionOptions
                 'collation' => $this->collation !== null,
                 'sslMode' => $this->sslMode !== null,
                 'sslCa' => $this->sslCa !== null,
+                'sslCert' => $this->sslCert !== null,
+                'sslKey' => $this->sslKey !== null,
                 'connectTimeout' => $this->connectTimeout !== null,
                 'applicationName' => $this->applicationName !== null,
                 'compression' => $this->compression !== null,

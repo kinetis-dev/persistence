@@ -198,4 +198,76 @@ final class DriverConstructionTest extends TestCase
         self::assertSame($options, self::property(new PgsqlAsyncClient('h', 'u', 'p', 'db', 5432, $options), 'options'));
         self::assertSame($options, self::property(new PdoPgsqlClient('h', 'u', 'p', 'db', 5432, $options), 'options'));
     }
+
+    public function test_a_client_certificate_without_its_key_is_rejected(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage(
+            'ConnectionOptions $sslCert and $sslKey must be set together — a client certificate is '
+            . 'unusable without its private key, and vice versa.',
+        );
+        new ConnectionOptions(sslMode: 'require', sslCert: '/certs/client.pem');
+    }
+
+    public function test_a_client_key_without_its_certificate_is_rejected(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('must be set together');
+        new ConnectionOptions(sslMode: 'require', sslKey: '/certs/client.key');
+    }
+
+    public function test_a_client_certificate_without_tls_is_rejected(): void
+    {
+        // Silently ignoring it would look like mutual TLS was configured.
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage(
+            'ConnectionOptions $sslCert/$sslKey need TLS: set $sslMode to "require", "verify-ca", '
+            . '"verify-full" (or libpq\'s "allow"/"prefer"), since a client certificate is only ever '
+            . 'presented during a TLS handshake.',
+        );
+        new ConnectionOptions(sslCert: '/certs/client.pem', sslKey: '/certs/client.key');
+    }
+
+    public function test_a_client_certificate_with_ssl_mode_disable_is_rejected(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('need TLS');
+        new ConnectionOptions(sslMode: 'disable', sslCert: '/certs/client.pem', sslKey: '/certs/client.key');
+    }
+
+    public function test_an_empty_client_certificate_path_is_rejected(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('ConnectionOptions $sslCert must be a file path, not an empty string.');
+        new ConnectionOptions(sslMode: 'require', sslCert: '', sslKey: '/certs/client.key');
+    }
+
+    /**
+     * Mutual TLS is orthogonal to *server* verification: presenting a
+     * client certificate is valid under every mode that performs a
+     * handshake, including the non-verifying "require".
+     */
+    #[DataProvider('everyDriver')]
+    public function test_every_driver_accepts_mutual_tls(string $driverClass, int $port): void
+    {
+        $options = new ConnectionOptions(
+            sslMode: 'verify-full',
+            sslCa: '/certs/ca.pem',
+            sslCert: '/certs/client.pem',
+            sslKey: '/certs/client.key',
+        );
+
+        self::assertSame($options, self::property(new $driverClass('h', 'u', 'p', 'db', $port, $options), 'options'));
+    }
+
+    /**
+     * @return iterable<string, array{class-string, int}>
+     */
+    public static function everyDriver(): iterable
+    {
+        yield 'mysqli-async' => [MysqliAsyncClient::class, 3306];
+        yield 'pdo-mysql' => [PdoMysqlClient::class, 3306];
+        yield 'pgsql-async' => [PgsqlAsyncClient::class, 5432];
+        yield 'pdo-pgsql' => [PdoPgsqlClient::class, 5432];
+    }
 }

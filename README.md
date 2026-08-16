@@ -88,6 +88,8 @@ is scoped.
 | `DB_COLLATION` | — | MySQL collation (`SET NAMES ... COLLATE`). |
 | `DB_SSLMODE` | — | `disable`/`require`/`verify-ca`/`verify-full` on every driver; libpq additionally accepts `allow`/`prefer`. |
 | `DB_SSL_CA` | — | CA bundle path for the verify modes. |
+| `DB_SSL_CERT` | — | Client certificate for mutual TLS; requires `DB_SSL_KEY`. |
+| `DB_SSL_KEY` | — | Client private key; requires `DB_SSL_CERT`. Postgres requires `0600` permissions. |
 | `DB_CONNECT_TIMEOUT` | — | Seconds. |
 | `DB_APP_NAME` | — | Postgres `application_name`. |
 | `DB_COMPRESSION` | — | MySQL protocol compression. |

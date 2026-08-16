@@ -17,6 +17,8 @@ const PGSQL_FATAL_ERROR = 7;
 class PDO
 {
     public const MYSQL_ATTR_COMPRESS = 1003;
+    public const MYSQL_ATTR_SSL_KEY = 1007;
+    public const MYSQL_ATTR_SSL_CERT = 1008;
     public const MYSQL_ATTR_SSL_CA = 1009;
     public const MYSQL_ATTR_SSL_VERIFY_SERVER_CERT = 1014;
 }

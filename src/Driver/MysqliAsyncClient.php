@@ -424,7 +424,10 @@ final class MysqliAsyncClient implements MysqlLink
                 // mysqlnd's verification also checks the hostname, so
                 // verify-ca behaves as verify-full here — stricter than
                 // asked, never looser.
-                $connection->ssl_set(null, null, $options->sslCa, null, null);
+                // ssl_set() takes the private key first, then the
+                // certificate, then the CA — client credentials are null
+                // unless mutual TLS was configured.
+                $connection->ssl_set($options->sslKey, $options->sslCert, $options->sslCa, null, null);
                 $flags |= \MYSQLI_CLIENT_SSL;
 
                 if ($options->sslMode === 'require') {

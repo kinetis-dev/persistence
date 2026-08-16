@@ -112,6 +112,11 @@ final class PdoMysqlClient implements MysqlLink
             // for the no-verification mode.
             $attributes[PDO::MYSQL_ATTR_SSL_VERIFY_SERVER_CERT] = $this->options->sslMode !== 'require';
             $attributes[PDO::MYSQL_ATTR_SSL_CA] = $this->options->sslCa ?? '';
+
+            if ($this->options->sslCert !== null) {
+                $attributes[PDO::MYSQL_ATTR_SSL_CERT] = $this->options->sslCert;
+                $attributes[PDO::MYSQL_ATTR_SSL_KEY] = (string) $this->options->sslKey;
+            }
         }
 
         try {

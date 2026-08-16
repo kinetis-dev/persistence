@@ -114,7 +114,114 @@ final class TlsTest extends TestCase
         $db->query('SELECT 1');
     }
 
-    private static function mysqlClient(string $driver, ConnectionOptions $options): SqlLink
+    /**
+     * Mutual TLS: the server authenticates the client's certificate too
+     * (MySQL's REQUIRE X509, Postgres's clientcert=verify-ca). Gated on
+     * TLS_CLIENT_CERT so the rest of this file still runs where only
+     * server-side TLS is configured.
+     */
+    #[DataProvider('mysqlDrivers')]
+    public function test_mutual_tls_authenticates_the_client_on_mysql(string $driver): void
+    {
+        $db = self::mysqlClient($driver, self::mutualTlsOptions(), mutual: true);
+
+        self::assertSame(1, $db->query('SELECT 1 AS ok')->fetchRow()['ok']);
+        $db->close();
+    }
+
+    #[DataProvider('mysqlDrivers')]
+    public function test_a_client_without_a_certificate_is_refused_by_mysql(string $driver): void
+    {
+        self::requireClientCert();
+
+        // Server-side TLS only: correct certificate chain, no client
+        // identity — the REQUIRE X509 user must reject it.
+        $db = self::mysqlClient($driver, new ConnectionOptions(
+            sslMode: 'verify-full',
+            sslCa: self::env('TLS_CA'),
+        ), mutual: true);
+
+        $this->expectException(ConnectionException::class);
+        $db->query('SELECT 1');
+    }
+
+    #[DataProvider('pgsqlDrivers')]
+    public function test_mutual_tls_authenticates_the_client_on_postgres(string $driver): void
+    {
+        $db = self::pgsqlClient($driver, self::mutualTlsOptions(), mutual: true);
+
+        self::assertSame(1, $db->query('SELECT 1 AS ok')->fetchRow()['ok']);
+        $db->close();
+    }
+
+    #[DataProvider('pgsqlDrivers')]
+    public function test_a_client_without_a_certificate_is_refused_by_postgres(string $driver): void
+    {
+        self::requireClientCert();
+
+        $db = self::pgsqlClient($driver, new ConnectionOptions(
+            sslMode: 'verify-full',
+            sslCa: self::env('TLS_CA'),
+        ), mutual: true);
+
+        $this->expectException(ConnectionException::class);
+        $db->query('SELECT 1');
+    }
+
+    /**
+     * Mutual TLS is independent of *server* verification: the client
+     * certificate is presented during any handshake, so it works under
+     * `require` (no CA, no server verification) too.
+     */
+    #[DataProvider('mysqlDrivers')]
+    public function test_mutual_tls_works_under_require_on_mysql(string $driver): void
+    {
+        $db = self::mysqlClient($driver, self::requireMutualTlsOptions(), mutual: true);
+
+        self::assertSame(1, $db->query('SELECT 1 AS ok')->fetchRow()['ok']);
+        $db->close();
+    }
+
+    #[DataProvider('pgsqlDrivers')]
+    public function test_mutual_tls_works_under_require_on_postgres(string $driver): void
+    {
+        $db = self::pgsqlClient($driver, self::requireMutualTlsOptions(), mutual: true);
+
+        self::assertSame(1, $db->query('SELECT 1 AS ok')->fetchRow()['ok']);
+        $db->close();
+    }
+
+    private static function requireMutualTlsOptions(): ConnectionOptions
+    {
+        return new ConnectionOptions(
+            sslMode: 'require',
+            sslCert: self::requireClientCert(),
+            sslKey: self::env('TLS_CLIENT_KEY'),
+        );
+    }
+
+    private static function mutualTlsOptions(): ConnectionOptions
+    {
+        return new ConnectionOptions(
+            sslMode: 'verify-full',
+            sslCa: self::env('TLS_CA'),
+            sslCert: self::requireClientCert(),
+            sslKey: self::env('TLS_CLIENT_KEY'),
+        );
+    }
+
+    private static function requireClientCert(): string
+    {
+        $cert = \getenv('TLS_CLIENT_CERT');
+
+        if ($cert === false) {
+            self::markTestSkipped('TLS_CLIENT_CERT is not set — mutual-TLS tests are environment-gated.');
+        }
+
+        return $cert;
+    }
+
+    private static function mysqlClient(string $driver, ConnectionOptions $options, bool $mutual = false): SqlLink
     {
         $host = \getenv('MYSQL_TLS_HOST');
 
@@ -124,7 +231,7 @@ final class TlsTest extends TestCase
 
         $args = [
             $host,
-            \getenv('MYSQL_TLS_USER') ?: 'testuser',
+            $mutual ? (\getenv('MYSQL_MTLS_USER') ?: 'mtlsuser') : (\getenv('MYSQL_TLS_USER') ?: 'testuser'),
             \getenv('MYSQL_TLS_PASSWORD') ?: 'testpass',
             \getenv('MYSQL_TLS_DATABASE') ?: 'testdb',
             (int) (\getenv('MYSQL_TLS_PORT') ?: 3306),
@@ -134,7 +241,7 @@ final class TlsTest extends TestCase
         return $driver === 'mysqli-async' ? new MysqliAsyncClient(...$args) : new PdoMysqlClient(...$args);
     }
 
-    private static function pgsqlClient(string $driver, ConnectionOptions $options): SqlLink
+    private static function pgsqlClient(string $driver, ConnectionOptions $options, bool $mutual = false): SqlLink
     {
         $host = \getenv('POSTGRES_TLS_HOST');
 
@@ -144,7 +251,7 @@ final class TlsTest extends TestCase
 
         $args = [
             $host,
-            \getenv('POSTGRES_TLS_USER') ?: 'testuser',
+            $mutual ? (\getenv('POSTGRES_MTLS_USER') ?: 'mtlsuser') : (\getenv('POSTGRES_TLS_USER') ?: 'testuser'),
             \getenv('POSTGRES_TLS_PASSWORD') ?: 'testpass',
             \getenv('POSTGRES_TLS_DATABASE') ?: 'testdb',
             (int) (\getenv('POSTGRES_TLS_PORT') ?: 5432),
