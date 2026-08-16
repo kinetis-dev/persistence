@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "e6733d2573a260f3674c4df147cfe257",
+    "content-hash": "4a68346ffd5ebe2315d867d7dfc6edff",
     "packages": [
         {
             "name": "graham-campbell/result-type",
@@ -74,7 +74,7 @@
             "dist": {
                 "type": "path",
                 "url": "../framework",
-                "reference": "4948a3e9e7f40441def7ed4a1280c6f622857191"
+                "reference": "0de7f8938cf33a41a31bb8d347a7a95cfe8fd535"
             },
             "require": {
                 "ext-fileinfo": "*",
@@ -104,6 +104,9 @@
                 "bin/kinetis"
             ],
             "type": "library",
+            "extra": {
+                "kinetis": []
+            },
             "autoload": {
                 "psr-4": {
                     "Kinetis\\": "src/"
@@ -7152,6 +7155,6 @@
     "platform": {
         "php": "^8.4"
     },
-    "platform-dev": [],
-    "plugin-api-version": "2.6.0"
+    "platform-dev": {},
+    "plugin-api-version": "2.9.0"
 }

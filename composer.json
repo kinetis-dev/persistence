@@ -36,6 +36,11 @@
             "Kinetis\\Persistence\\Tests\\": "tests/"
         }
     },
+    "extra": {
+        "kinetis": {
+            "bootstrap": "Kinetis\\Persistence\\PackageBootstrap"
+        }
+    },
     "repositories": [
         {
             "type": "path",

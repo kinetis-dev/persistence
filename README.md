@@ -33,11 +33,14 @@ $guard->transaction($db, function ($tx) {
 });
 ```
 
-`SqlConnectionFactory::fromConfig()` builds a
-`MysqlConnectionPool`/`PostgresConnectionPool` from `Kinetis\Config`
-(`DB_CONNECTION`/`DB_HOST`/`DB_NAME`/`DB_USER`/`DB_PASSWORD`/`DB_PORT`,
-or their `DB_{NAME}_*` named-connection equivalents). `TransactionGuard`
-is the genuinely Kinetis-specific piece: request-scoped, autowired fresh
+`SqlConnectionFactory::fromConfig()` builds a runtime-matched driver
+client from `Kinetis\Config` (the `DB_*` keys below, or their
+`DB_{NAME}_*` named-connection equivalents), bound under
+`Contract\MysqlLink`/`Contract\PostgresLink` automatically once
+`DB_CONNECTION` is set — this package's bootstrap registers it before
+the application's own `bootstrap.php`, which wins on the same binding.
+
+`TransactionGuard` is the genuinely Kinetis-specific piece: request-scoped, autowired fresh
 per `RequestScope` like any other unregistered class, tracking every
 transaction it starts so a request that throws before committing or
 rolling back doesn't leak an open transaction into whatever the pooled
@@ -49,6 +52,53 @@ never opens one.
 Optional: an application with no database at all can skip this package
 entirely — `Kinetis\Http\Kernel` degrades gracefully (`class_exists()`
 check, no dispose hook registered) when it isn't installed.
+
+## Provides
+
+Installing this package is what opts it in — it registers the
+following automatically, through the `extra.kinetis` declaration in its
+`composer.json` (see
+[docs.kinetis.dev/cli.html](https://docs.kinetis.dev/cli.html)):
+
+- **Service binding**: with `DB_CONNECTION` set, the default connection
+  is built and bound under its dialect contract
+  (`Kinetis\Persistence\Contract\MysqlLink` or
+  `Contract\PostgresLink`) before your own `bootstrap.php` runs — your
+  registration wins on the same binding. Inert when `DB_CONNECTION` is
+  unset.
+
+Nothing else — no commands, routes, middleware, event listeners, or
+MCP tools.
+
+## Configuration
+
+Read from the environment (or `.env`) via `Kinetis\Config`. Every key
+is scoped.
+
+| Key | Default | Purpose |
+|---|---|---|
+| `DB_CONNECTION` | *(required)* | `mysql` or `pgsql`. |
+| `DB_HOST` | `127.0.0.1` | Server host. |
+| `DB_PORT` | `3306` / `5432` | Per dialect. |
+| `DB_NAME` | `app` | Database name. |
+| `DB_USER` | `app` | User. |
+| `DB_PASSWORD` | *(required)* | Password. |
+| `DB_DRIVER` | `auto` | `auto` (native under FrankenPHP worker mode, PDO otherwise), `native`, or `pdo`. |
+| `DB_CHARSET` | `utf8mb4` (MySQL) | Connection charset. |
+| `DB_COLLATION` | — | MySQL collation (`SET NAMES ... COLLATE`). |
+| `DB_SSLMODE` | — | `disable`/`require`/`verify-ca`/`verify-full` on every driver; libpq additionally accepts `allow`/`prefer`. |
+| `DB_SSL_CA` | — | CA bundle path for the verify modes. |
+| `DB_CONNECT_TIMEOUT` | — | Seconds. |
+| `DB_APP_NAME` | — | Postgres `application_name`. |
+| `DB_COMPRESSION` | — | MySQL protocol compression. |
+| `DB_MAX_CONNECTIONS` | `8` | Async drivers' pool width — per worker thread under FrankenPHP. |
+| `DB_WARM_CONNECTIONS` | `0` | Connections opened at boot instead of first use — load-bearing for the mysqli driver under worker mode. |
+| `DB_OPTIONS` | — | Legacy key=value string, translated where canonical equivalents exist. |
+
+Scoped keys follow the named-connection convention — the connection
+name inserts after the first segment: `DB_HOST` + `reporting` → `DB_REPORTING_HOST`.
+Full reference across every package:
+[docs.kinetis.dev/config.html](https://docs.kinetis.dev/config.html).
 
 ## Installation
 
