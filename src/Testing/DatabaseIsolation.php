@@ -36,7 +36,7 @@ final class DatabaseIsolation
      */
     public static function assertPlainIdentifier(string $table): void
     {
-        if (preg_match('/^[A-Za-z0-9_]+$/', $table) !== 1) {
+        if (preg_match('/^\w+$/', $table) !== 1) {
             throw new InvalidArgumentException(
                 "Table name \"{$table}\" must contain only letters, digits, and underscores.",
             );

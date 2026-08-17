@@ -46,13 +46,7 @@ final readonly class ConnectionOptions
         // charset/collation reach drivers as SQL fragments (SET NAMES) or
         // API calls — constrain them to identifier characters so a value
         // from the environment can never smuggle SQL along.
-        foreach (['charset' => $charset, 'collation' => $collation] as $name => $value) {
-            if ($value !== null && \preg_match(self::IDENTIFIER_PATTERN, $value) !== 1) {
-                throw new InvalidArgumentException(
-                    "ConnectionOptions \${$name} must match " . self::IDENTIFIER_PATTERN . ", got \"{$value}\".",
-                );
-            }
-        }
+        self::assertIdentifiers(['charset' => $charset, 'collation' => $collation]);
 
         if ($sslMode !== null && !\in_array($sslMode, self::SSL_MODES, true)) {
             throw new InvalidArgumentException(
@@ -60,11 +54,7 @@ final readonly class ConnectionOptions
             );
         }
 
-        foreach (['sslCa' => $sslCa, 'sslCert' => $sslCert, 'sslKey' => $sslKey] as $name => $value) {
-            if ($value === '') {
-                throw new InvalidArgumentException("ConnectionOptions \${$name} must be a file path, not an empty string.");
-            }
-        }
+        self::assertNonEmptyPaths(['sslCa' => $sslCa, 'sslCert' => $sslCert, 'sslKey' => $sslKey]);
 
         // A client certificate is only half of a keypair: mutual TLS
         // needs both, and one alone is always a misconfiguration rather
@@ -92,6 +82,34 @@ final readonly class ConnectionOptions
 
         if ($maxConnections < 1) {
             throw new InvalidArgumentException('ConnectionOptions $maxConnections must be at least 1.');
+        }
+    }
+
+    /**
+     * @param array<string, ?string> $values keyed by the constructor
+     *     parameter name, for the exception message
+     */
+    private static function assertIdentifiers(array $values): void
+    {
+        foreach ($values as $name => $value) {
+            if ($value !== null && \preg_match(self::IDENTIFIER_PATTERN, $value) !== 1) {
+                throw new InvalidArgumentException(
+                    "ConnectionOptions \${$name} must match " . self::IDENTIFIER_PATTERN . ", got \"{$value}\".",
+                );
+            }
+        }
+    }
+
+    /**
+     * @param array<string, ?string> $values keyed by the constructor
+     *     parameter name, for the exception message
+     */
+    private static function assertNonEmptyPaths(array $values): void
+    {
+        foreach ($values as $name => $value) {
+            if ($value === '') {
+                throw new InvalidArgumentException("ConnectionOptions \${$name} must be a file path, not an empty string.");
+            }
         }
     }
 
