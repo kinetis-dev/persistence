@@ -7,6 +7,7 @@ namespace Kinetis\Persistence\Driver;
 use Kinetis\Persistence\ConnectionOptions;
 use Kinetis\Persistence\Contract\PostgresLink;
 use Kinetis\Persistence\Contract\PostgresTransaction;
+use Kinetis\Persistence\Contract\PrefersPreparedStatements;
 use Kinetis\Persistence\Exception\ConnectionException;
 use PDO;
 use PDOException;
@@ -27,7 +28,7 @@ use PDOStatement;
  * A long-lived process needing reconnection should run the {@see PgsqlAsyncClient}
  * driver instead, whose pool discards and replaces dead connections.
  */
-final class PdoPgsqlClient implements PostgresLink
+final class PdoPgsqlClient implements PostgresLink, PrefersPreparedStatements
 {
     use PdoExecutionTrait;
 

@@ -22,6 +22,18 @@ use PDOStatement;
 abstract class PdoTransaction extends AbstractTransaction
 {
     /**
+     * Prepared statements memoized for this transaction's lifetime, the
+     * same way PdoExecutionTrait does for a connection's, and for the
+     * same reason: native prepares make every prepare() its own round
+     * trip, so without reuse a transaction issuing one statement N times
+     * pays 2N round trips instead of N+1. Scoped to the transaction
+     * because that is how long this object owns the PDO handle.
+     *
+     * @var array<string, PDOStatement>
+     */
+    private array $statements = [];
+
+    /**
      * @param Closure(PDOStatement): SqlResult $buildResult The owning
      *     client's result construction (dialects differ on lastInsertId).
      */
@@ -52,10 +64,24 @@ abstract class PdoTransaction extends AbstractTransaction
     protected function runWithParams(string $sql, array $params): SqlResult
     {
         try {
-            $statement = $this->pdo->prepare($sql);
+            $statement = $this->statements[$sql] ?? null;
 
-            if ($statement === false) {
-                throw new QueryException('Failed to prepare query', $sql);
+            if ($statement === null) {
+                // Bounded the same way the client's cache is: SQL built by
+                // interpolating values would otherwise grow it without
+                // limit, while a bounded set of parameterized statements
+                // stays at exactly one prepare each.
+                if (\count($this->statements) >= 256) {
+                    $this->statements = [];
+                }
+
+                $prepared = $this->pdo->prepare($sql);
+
+                if ($prepared === false) {
+                    throw new QueryException('Failed to prepare query', $sql);
+                }
+
+                $statement = $this->statements[$sql] = $prepared;
             }
 
             PdoParamBinder::bind($statement, $params);

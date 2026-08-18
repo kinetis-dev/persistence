@@ -7,6 +7,7 @@ namespace Kinetis\Persistence\Driver;
 use Kinetis\Persistence\ConnectionOptions;
 use Kinetis\Persistence\Contract\MysqlLink;
 use Kinetis\Persistence\Contract\MysqlTransaction;
+use Kinetis\Persistence\Contract\PrefersPreparedStatements;
 use Kinetis\Persistence\Exception\ConnectionException;
 use PDO;
 use PDOException;
@@ -29,7 +30,7 @@ use PDOStatement;
  * A long-lived process needing reconnection should run the {@see MysqliAsyncClient}
  * driver instead, whose pool discards and replaces dead connections.
  */
-final class PdoMysqlClient implements MysqlLink
+final class PdoMysqlClient implements MysqlLink, PrefersPreparedStatements
 {
     use PdoExecutionTrait;
 
