@@ -10,7 +10,7 @@
     ],
     "require": {
         "php": "^8.4",
-        "kinetis/framework": "dev-main",
+        "kinetis/framework": "^1.19.2",
         "revolt/event-loop": "^1.0.9"
     },
     "require-dev": {
@@ -41,12 +41,6 @@
             "bootstrap": "Kinetis\\Persistence\\PackageBootstrap"
         }
     },
-    "repositories": [
-        {
-            "type": "path",
-            "url": "../framework"
-        }
-    ],
     "config": {
         "sort-packages": true,
         "allow-plugins": {
