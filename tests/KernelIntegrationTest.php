@@ -7,6 +7,8 @@ namespace Kinetis\Persistence\Tests;
 use Kinetis\Container\AppScope;
 use Kinetis\Http\Kernel;
 use Kinetis\Http\Routing\Router;
+use Kinetis\Config\Config;
+use Kinetis\Mcp\Http\McpController;
 use Kinetis\Mcp\McpDispatcher;
 use Kinetis\Mcp\McpRegistry;
 use Kinetis\Mcp\McpServer;
@@ -56,11 +58,15 @@ final class KernelIntegrationTest extends TestCase
     public function test_rolls_back_a_transaction_left_open_by_a_tool_over_http(): void
     {
         $app = new AppScope();
-        $app->boot();
-
+        $app->instance(Config::class, new Config([]));
         $registry = new McpRegistry();
         $registry->register(DanglingTransactionToolController::class);
-        $kernel = new Kernel($app, new Router(), mcp: new McpServer($registry, new McpDispatcher($app)));
+        $app->instance(McpServer::class, new McpServer($registry, new McpDispatcher($app)));
+        $app->boot();
+
+        $router = new Router();
+        $router->register(McpController::class);
+        $kernel = new Kernel($app, $router, middlewareGroups: ['mcp' => []]);
 
         DanglingTransactionHolder::$link = null;
 

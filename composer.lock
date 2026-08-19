@@ -4,7 +4,7 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "21addad20fb5dd5a5e2698902c85d3f9",
+    "content-hash": "b92c1df2b1a9eafa9927acdc5c1b92d1",
     "packages": [
         {
             "name": "graham-campbell/result-type",
@@ -3113,6 +3113,61 @@
                 "source": "https://github.com/kelunik/certificate/tree/v1.1.3"
             },
             "time": "2023-02-03T21:26:53+00:00"
+        },
+        {
+            "name": "kinetis/mcp",
+            "version": "dev-main",
+            "dist": {
+                "type": "path",
+                "url": "../mcp",
+                "reference": "aaab278bd50bfde0f4f79e1733fc6c4db6865afa"
+            },
+            "require": {
+                "kinetis/framework": "dev-main",
+                "nyholm/psr7": "^1.8.2",
+                "php": "^8.4",
+                "psr/container": "^2.0.2",
+                "psr/http-message": "^2.0",
+                "psr/http-server-middleware": "^1.0.2",
+                "psr/log": "^3.0.2"
+            },
+            "require-dev": {
+                "infection/infection": "^0.35.0",
+                "kinetis/auth": "dev-main",
+                "kinetis/persistence": "dev-main",
+                "phpstan/phpstan": "^2.2.8",
+                "phpunit/phpunit": "^12.5.33",
+                "vimeo/psalm": "^6.16.1"
+            },
+            "type": "library",
+            "extra": {
+                "kinetis": {
+                    "scan": "Kinetis\\Mcp\\",
+                    "bootstrap": "Kinetis\\Mcp\\PackageBootstrap"
+                }
+            },
+            "autoload": {
+                "psr-4": {
+                    "Kinetis\\Mcp\\": "src/"
+                }
+            },
+            "autoload-dev": {
+                "psr-4": {
+                    "Kinetis\\Mcp\\Tests\\": "tests/"
+                }
+            },
+            "license": [
+                "MIT"
+            ],
+            "authors": [
+                {
+                    "name": "Alon Noy"
+                }
+            ],
+            "description": "The Model Context Protocol server for Kinetis — tools and resources declared with attributes and validated like HTTP routes, served over stdio and as an ordinary /mcp route.",
+            "transport-options": {
+                "relative": true
+            }
         },
         {
             "name": "league/uri",
@@ -7066,7 +7121,8 @@
     "aliases": [],
     "minimum-stability": "stable",
     "stability-flags": {
-        "kinetis/framework": 20
+        "kinetis/framework": 20,
+        "kinetis/mcp": 20
     },
     "prefer-stable": true,
     "prefer-lowest": false,
