@@ -111,15 +111,9 @@ final class SqlParamInterpolator
             }
 
             if ($char === '?') {
-                if ($i + 1 < $length && $sql[$i + 1] === '?') {
-                    $out .= '?';
-                    $i += 2;
-                    continue;
-                }
-
-                $out .= self::encodePlaceholder($params, $paramIndex, $encode);
-                $paramIndex++;
-                $i++;
+                [$consumed, $advance, $paramIndex] = self::consumePlaceholder($sql, $i, $length, $params, $paramIndex, $encode);
+                $out .= $consumed;
+                $i += $advance;
                 continue;
             }
 
@@ -136,6 +130,27 @@ final class SqlParamInterpolator
         }
 
         return $out;
+    }
+
+    /**
+     * "?" was just seen at $sql[$i], outside any quote and not already
+     * handled by {@see consumeNonQuotedSpecial()} — either the doubled
+     * "??" literal escape, or a real placeholder to encode. Returns the
+     * text to append, how many bytes of $sql it consumed, and the
+     * param index to continue from (unchanged for "??", incremented for
+     * a real placeholder).
+     *
+     * @param list<mixed> $params
+     * @param Closure(mixed, int): string $encode
+     * @return array{0: string, 1: int, 2: int}
+     */
+    private static function consumePlaceholder(string $sql, int $i, int $length, array $params, int $paramIndex, Closure $encode): array
+    {
+        if ($i + 1 < $length && $sql[$i + 1] === '?') {
+            return ['?', 2, $paramIndex];
+        }
+
+        return [self::encodePlaceholder($params, $paramIndex, $encode), 1, $paramIndex + 1];
     }
 
     /**
@@ -247,52 +262,105 @@ final class SqlParamInterpolator
      * quote-open/placeholder/plain-character handling of their own.
      * Returns the literal text to copy through and the byte offset just
      * past it, or null when $sql[$i] doesn't actually open any of them.
+     * Each construct gets its own try*() method below, tried in turn —
+     * they're independent (never share state beyond the same $sql/$i),
+     * unlike the mid-string scanners in this class, so splitting them
+     * out names each one instead of leaving four early-return branches
+     * folded into a single dispatcher.
      *
      * @return array{0: string, 1: int}|null
      */
     private static function consumeNonQuotedSpecial(string $sql, int $i, int $length, SqlDialect $dialect): ?array
     {
-        $char = $sql[$i];
+        return self::tryDoubleDashComment($sql, $i, $length, $dialect)
+            ?? self::tryHashComment($sql, $i, $length, $dialect)
+            ?? self::tryBlockComment($sql, $i, $length, $dialect)
+            ?? self::tryDollarQuote($sql, $i, $length, $dialect);
+    }
 
-        if ($char === '-' && $i + 1 < $length && $sql[$i + 1] === '-') {
-            $isComment = $dialect !== SqlDialect::Mysql || self::mysqlDoubleDashIsComment($sql, $i, $length);
-
-            if ($isComment) {
-                $end = self::lineCommentEnd($sql, $i, $length);
-
-                return [\substr($sql, $i, $end - $i), $end];
-            }
+    /**
+     * A "--" that {@see mysqlDoubleDashIsComment()} agrees opens a
+     * comment (always true for Postgres, conditional for MySQL).
+     *
+     * @return array{0: string, 1: int}|null
+     */
+    private static function tryDoubleDashComment(string $sql, int $i, int $length, SqlDialect $dialect): ?array
+    {
+        if ($sql[$i] !== '-' || $i + 1 >= $length || $sql[$i + 1] !== '-') {
+            return null;
         }
 
-        if ($dialect === SqlDialect::Mysql && $char === '#') {
-            $end = self::lineCommentEnd($sql, $i, $length);
+        $isComment = $dialect !== SqlDialect::Mysql || self::mysqlDoubleDashIsComment($sql, $i, $length);
 
-            return [\substr($sql, $i, $end - $i), $end];
+        if (!$isComment) {
+            return null;
         }
 
-        if ($char === '/' && $i + 1 < $length && $sql[$i + 1] === '*') {
-            $isExecutable = $dialect === SqlDialect::Mysql && self::isExecutableComment($sql, $i, $length);
-            $end = self::blockCommentEnd($sql, $i, $length, $dialect);
-            $content = \substr($sql, $i, $end - $i);
+        $end = self::lineCommentEnd($sql, $i, $length);
 
-            if ($isExecutable) {
-                self::rejectPlaceholderInsideExecutableComment($content);
-            }
+        return [\substr($sql, $i, $end - $i), $end];
+    }
 
-            return [$content, $end];
+    /**
+     * MySQL's "#" line comment — Postgres has no equivalent.
+     *
+     * @return array{0: string, 1: int}|null
+     */
+    private static function tryHashComment(string $sql, int $i, int $length, SqlDialect $dialect): ?array
+    {
+        if ($dialect !== SqlDialect::Mysql || $sql[$i] !== '#') {
+            return null;
         }
 
-        if ($dialect === SqlDialect::Postgres && $char === '$') {
-            $delimiter = self::dollarQuoteDelimiter($sql, $i, $length);
+        $end = self::lineCommentEnd($sql, $i, $length);
 
-            if ($delimiter !== null) {
-                $end = self::dollarQuoteEnd($sql, $i, $delimiter, $length);
+        return [\substr($sql, $i, $end - $i), $end];
+    }
 
-                return [\substr($sql, $i, $end - $i), $end];
-            }
+    /**
+     * A "/* ... *\/" block comment, both dialects — rejecting a "?"
+     * inside it first when it's also an executable comment.
+     *
+     * @return array{0: string, 1: int}|null
+     */
+    private static function tryBlockComment(string $sql, int $i, int $length, SqlDialect $dialect): ?array
+    {
+        if ($sql[$i] !== '/' || $i + 1 >= $length || $sql[$i + 1] !== '*') {
+            return null;
         }
 
-        return null;
+        $isExecutable = $dialect === SqlDialect::Mysql && self::isExecutableComment($sql, $i, $length);
+        $end = self::blockCommentEnd($sql, $i, $length, $dialect);
+        $content = \substr($sql, $i, $end - $i);
+
+        if ($isExecutable) {
+            self::rejectPlaceholderInsideExecutableComment($content);
+        }
+
+        return [$content, $end];
+    }
+
+    /**
+     * A Postgres "$$"/"$tag$" dollar-quoted string — no equivalent on
+     * MySQL, where "$" is always ordinary text.
+     *
+     * @return array{0: string, 1: int}|null
+     */
+    private static function tryDollarQuote(string $sql, int $i, int $length, SqlDialect $dialect): ?array
+    {
+        if ($dialect !== SqlDialect::Postgres || $sql[$i] !== '$') {
+            return null;
+        }
+
+        $delimiter = self::dollarQuoteDelimiter($sql, $i, $length);
+
+        if ($delimiter === null) {
+            return null;
+        }
+
+        $end = self::dollarQuoteEnd($sql, $i, $delimiter, $length);
+
+        return [\substr($sql, $i, $end - $i), $end];
     }
 
     /**
