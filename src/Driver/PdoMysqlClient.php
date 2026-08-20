@@ -96,7 +96,14 @@ final class PdoMysqlClient implements MysqlLink, PrefersPreparedStatements
         }
 
         if ($this->options->compression === true) {
-            $attributes[PDO::MYSQL_ATTR_COMPRESS] = true;
+            // \Pdo\Mysql::ATTR_*, not the equivalent PDO::MYSQL_ATTR_*
+            // constants — the latter are deprecated as of PHP 8.5
+            // (confirmed directly: identical underlying values, just a
+            // deprecation notice on the old form), and \Pdo\Mysql's
+            // constants already exist and resolve correctly on this
+            // package's PHP 8.4 floor too, so there's no version gate
+            // needed to switch unconditionally.
+            $attributes[\Pdo\Mysql::ATTR_COMPRESS] = true;
         }
 
         if ($this->options->wantsTls()) {
@@ -111,12 +118,12 @@ final class PdoMysqlClient implements MysqlLink, PrefersPreparedStatements
             // VERIFY_SERVER_CERT alone leaves the connection in
             // plaintext — and an empty CA path is the minimal trigger
             // for the no-verification mode.
-            $attributes[PDO::MYSQL_ATTR_SSL_VERIFY_SERVER_CERT] = $this->options->sslMode !== 'require';
-            $attributes[PDO::MYSQL_ATTR_SSL_CA] = $this->options->sslCa ?? '';
+            $attributes[\Pdo\Mysql::ATTR_SSL_VERIFY_SERVER_CERT] = $this->options->sslMode !== 'require';
+            $attributes[\Pdo\Mysql::ATTR_SSL_CA] = $this->options->sslCa ?? '';
 
             if ($this->options->sslCert !== null) {
-                $attributes[PDO::MYSQL_ATTR_SSL_CERT] = $this->options->sslCert;
-                $attributes[PDO::MYSQL_ATTR_SSL_KEY] = (string) $this->options->sslKey;
+                $attributes[\Pdo\Mysql::ATTR_SSL_CERT] = $this->options->sslCert;
+                $attributes[\Pdo\Mysql::ATTR_SSL_KEY] = (string) $this->options->sslKey;
             }
         }
 

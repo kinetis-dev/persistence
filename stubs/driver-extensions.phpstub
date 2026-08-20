@@ -1,11 +1,14 @@
 <?php
 
 /**
- * Declarations Psalm needs when analyzing without ext-pgsql/ext-pdo_mysql
- * loaded — this package only `suggest`s the driver extensions, so Psalm
- * neither auto-loads its bundled stubs nor knows these symbols in a
- * plain CLI container. Only what src/ actually references; values mirror
- * the extensions' own definitions.
+ * Declarations Psalm needs when analyzing without ext-pgsql loaded — this
+ * package only `suggest`s the driver extensions, so Psalm neither
+ * auto-loads its bundled stubs nor knows these symbols in a plain CLI
+ * container. Only what src/ actually references; values mirror the
+ * extension's own definitions. The equivalent ext-pdo_mysql gap
+ * (Pdo\Mysql's own ATTR_* constants) lives in the sibling
+ * pdo-mysql.phpstub instead, since it's a genuinely new class rather
+ * than extra constants on one already declared here.
  */
 
 const PGSQL_ASSOC = 1;
@@ -13,12 +16,3 @@ const PGSQL_CONNECT_FORCE_NEW = 2;
 const PGSQL_CONNECTION_OK = 0;
 const PGSQL_BAD_RESPONSE = 5;
 const PGSQL_FATAL_ERROR = 7;
-
-class PDO
-{
-    public const MYSQL_ATTR_COMPRESS = 1003;
-    public const MYSQL_ATTR_SSL_KEY = 1007;
-    public const MYSQL_ATTR_SSL_CERT = 1008;
-    public const MYSQL_ATTR_SSL_CA = 1009;
-    public const MYSQL_ATTR_SSL_VERIFY_SERVER_CERT = 1014;
-}

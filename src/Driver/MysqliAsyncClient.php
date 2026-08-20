@@ -348,7 +348,7 @@ final class MysqliAsyncClient implements MysqlLink
                     'Unsupported parameter type ' . \get_debug_type($value) . ' — only scalars and null can be bound',
                 ),
             };
-        });
+        }, SqlDialect::Mysql);
     }
 
     private function acquire(): mysqli

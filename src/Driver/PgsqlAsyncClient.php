@@ -233,6 +233,7 @@ final class PgsqlAsyncClient implements PostgresLink
             $sql,
             \array_values($params),
             static fn (mixed $value, int $index): string => '$' . ($index + 1),
+            SqlDialect::Postgres,
         );
 
         $encoded = \array_map(static fn (mixed $value): ?string => match (true) {

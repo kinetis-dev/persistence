@@ -1,0 +1,27 @@
+<?php
+
+namespace Pdo;
+
+/**
+ * Declarations Psalm needs when analyzing without ext-pdo_mysql loaded —
+ * Pdo\Mysql (PHP 8.4+) is a genuinely new class the mysqlnd driver adds,
+ * not an extension to an already-existing one the way the older
+ * PDO::MYSQL_ATTR_* constants were, so Psalm has no built-in knowledge of
+ * it at all in a plain CLI container that never loads the extension.
+ * This package only `suggest`s ext-pdo_mysql, so this stub has to cover
+ * the gap the same way stubs/driver-extensions.phpstub already does for
+ * mysqli/pgsql.
+ *
+ * Only the constants src/ actually references; values match the real
+ * driver's own — confirmed directly against a real pdo_mysql-enabled
+ * PHP 8.4 and 8.5, both of which resolve these correctly with no
+ * deprecation notice, unlike the equivalent PDO::MYSQL_ATTR_* constants.
+ */
+class Mysql extends \PDO
+{
+    public const int ATTR_COMPRESS = 1003;
+    public const int ATTR_SSL_KEY = 1007;
+    public const int ATTR_SSL_CERT = 1008;
+    public const int ATTR_SSL_CA = 1009;
+    public const int ATTR_SSL_VERIFY_SERVER_CERT = 1014;
+}

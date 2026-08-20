@@ -31,5 +31,6 @@
     <stubs>
         <file name="vendor/vimeo/psalm/stubs/extensions/mysqli.phpstub" />
         <file name="stubs/driver-extensions.phpstub" />
+        <file name="stubs/pdo-mysql.phpstub" />
     </stubs>
 </psalm>

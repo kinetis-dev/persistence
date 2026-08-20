@@ -106,6 +106,15 @@ trait PdoExecutionTrait
                     $this->statements = [];
                 }
 
+                // Runs once per distinct SQL string (amortized by the
+                // prepare cache above, same as prepare() itself) rather
+                // than on every call — see SqlParamInterpolator's own
+                // docblock for why this exists at all.
+                SqlParamInterpolator::assertNoExecutableCommentPlaceholder(
+                    $sql,
+                    $this instanceof MysqlLink ? SqlDialect::Mysql : SqlDialect::Postgres,
+                );
+
                 $prepared = $this->connection()->prepare($sql);
 
                 if ($prepared === false) {
