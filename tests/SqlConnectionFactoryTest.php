@@ -148,6 +148,25 @@ final class SqlConnectionFactoryTest extends TestCase
         self::assertInstanceOf(MysqliAsyncClient::class, SqlConnectionFactory::fromConfig($config));
     }
 
+    public function test_legacy_db_options_keys_are_matched_case_insensitively(): void
+    {
+        // LEGACY_KEY_MAP's own docblock promises "every historical
+        // spelling" — a key arriving in any case must still translate,
+        // not silently fall through to extraConnectionString (which the
+        // mysqli driver used below would then reject outright).
+        $client = SqlConnectionFactory::fromConfig(new Config([
+            'DB_CONNECTION' => 'mysql',
+            'DB_DRIVER' => 'native',
+            'DB_PASSWORD' => 's',
+            'DB_OPTIONS' => 'CHARSET=latin1 COMPRESS=on',
+        ]));
+
+        $options = self::property($client, 'options');
+        self::assertInstanceOf(ConnectionOptions::class, $options);
+        self::assertSame('latin1', $options->charset);
+        self::assertTrue($options->compression);
+    }
+
     public function test_untranslatable_db_options_keys_are_rejected_by_drivers_without_free_form_strings(): void
     {
         $config = new Config([
@@ -282,6 +301,22 @@ final class SqlConnectionFactoryTest extends TestCase
     public function test_compression_truthy_spellings_parse_to_true(): void
     {
         foreach (['1', 'true', 'on', 'yes'] as $spelling) {
+            $client = SqlConnectionFactory::fromConfig(new Config([
+                'DB_CONNECTION' => 'mysql',
+                'DB_DRIVER' => 'native',
+                'DB_PASSWORD' => 's',
+                'DB_COMPRESSION' => $spelling,
+            ]));
+
+            $options = self::property($client, 'options');
+            self::assertInstanceOf(ConnectionOptions::class, $options);
+            self::assertTrue($options->compression, "spelling: {$spelling}");
+        }
+    }
+
+    public function test_compression_truthy_spellings_are_matched_case_insensitively(): void
+    {
+        foreach (['TRUE', 'ON', 'YES', 'True', 'On'] as $spelling) {
             $client = SqlConnectionFactory::fromConfig(new Config([
                 'DB_CONNECTION' => 'mysql',
                 'DB_DRIVER' => 'native',
