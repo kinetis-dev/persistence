@@ -87,47 +87,12 @@ final class SqlParamInterpolator
                 continue;
             }
 
-            if ($char === '-' && $i + 1 < $length && $sql[$i + 1] === '-') {
-                $isComment = $dialect !== SqlDialect::Mysql || self::mysqlDoubleDashIsComment($sql, $i, $length);
+            $special = self::consumeNonQuotedSpecial($sql, $i, $length, $dialect);
 
-                if ($isComment) {
-                    $end = self::lineCommentEnd($sql, $i, $length);
-                    $out .= \substr($sql, $i, $end - $i);
-                    $i = $end;
-                    continue;
-                }
-            }
-
-            if ($dialect === SqlDialect::Mysql && $char === '#') {
-                $end = self::lineCommentEnd($sql, $i, $length);
-                $out .= \substr($sql, $i, $end - $i);
-                $i = $end;
+            if ($special !== null) {
+                [$consumed, $i] = $special;
+                $out .= $consumed;
                 continue;
-            }
-
-            if ($char === '/' && $i + 1 < $length && $sql[$i + 1] === '*') {
-                $isExecutable = $dialect === SqlDialect::Mysql && self::isExecutableComment($sql, $i, $length);
-                $end = self::blockCommentEnd($sql, $i, $length, $dialect);
-                $content = \substr($sql, $i, $end - $i);
-
-                if ($isExecutable) {
-                    self::rejectPlaceholderInsideExecutableComment($content);
-                }
-
-                $out .= $content;
-                $i = $end;
-                continue;
-            }
-
-            if ($dialect === SqlDialect::Postgres && $char === '$') {
-                $delimiter = self::dollarQuoteDelimiter($sql, $i, $length);
-
-                if ($delimiter !== null) {
-                    $end = self::dollarQuoteEnd($sql, $i, $delimiter, $length);
-                    $out .= \substr($sql, $i, $end - $i);
-                    $i = $end;
-                    continue;
-                }
             }
 
             if ($char === "'" || $char === '"' || $char === '`') {
@@ -275,6 +240,62 @@ final class SqlParamInterpolator
     }
 
     /**
+     * Tries to consume a comment or Postgres dollar-quoted span starting
+     * at $sql[$i], outside any regular quote — the four constructs
+     * {@see interpolate()} and {@see assertNoExecutableCommentPlaceholder()}
+     * both have to recognize identically before falling through to
+     * quote-open/placeholder/plain-character handling of their own.
+     * Returns the literal text to copy through and the byte offset just
+     * past it, or null when $sql[$i] doesn't actually open any of them.
+     *
+     * @return array{0: string, 1: int}|null
+     */
+    private static function consumeNonQuotedSpecial(string $sql, int $i, int $length, SqlDialect $dialect): ?array
+    {
+        $char = $sql[$i];
+
+        if ($char === '-' && $i + 1 < $length && $sql[$i + 1] === '-') {
+            $isComment = $dialect !== SqlDialect::Mysql || self::mysqlDoubleDashIsComment($sql, $i, $length);
+
+            if ($isComment) {
+                $end = self::lineCommentEnd($sql, $i, $length);
+
+                return [\substr($sql, $i, $end - $i), $end];
+            }
+        }
+
+        if ($dialect === SqlDialect::Mysql && $char === '#') {
+            $end = self::lineCommentEnd($sql, $i, $length);
+
+            return [\substr($sql, $i, $end - $i), $end];
+        }
+
+        if ($char === '/' && $i + 1 < $length && $sql[$i + 1] === '*') {
+            $isExecutable = $dialect === SqlDialect::Mysql && self::isExecutableComment($sql, $i, $length);
+            $end = self::blockCommentEnd($sql, $i, $length, $dialect);
+            $content = \substr($sql, $i, $end - $i);
+
+            if ($isExecutable) {
+                self::rejectPlaceholderInsideExecutableComment($content);
+            }
+
+            return [$content, $end];
+        }
+
+        if ($dialect === SqlDialect::Postgres && $char === '$') {
+            $delimiter = self::dollarQuoteDelimiter($sql, $i, $length);
+
+            if ($delimiter !== null) {
+                $end = self::dollarQuoteEnd($sql, $i, $delimiter, $length);
+
+                return [\substr($sql, $i, $end - $i), $end];
+            }
+        }
+
+        return null;
+    }
+
+    /**
      * The PDO drivers' own pre-flight equivalent of the check
      * {@see interpolate()} performs inline for the native drivers —
      * PDO never routes through interpolate() at all (native prepares
@@ -305,24 +326,10 @@ final class SqlParamInterpolator
                 continue;
             }
 
-            if ($char === '-' && $i + 1 < $length && $sql[$i + 1] === '-' && self::mysqlDoubleDashIsComment($sql, $i, $length)) {
-                $i = self::lineCommentEnd($sql, $i, $length);
-                continue;
-            }
+            $special = self::consumeNonQuotedSpecial($sql, $i, $length, $dialect);
 
-            if ($char === '#') {
-                $i = self::lineCommentEnd($sql, $i, $length);
-                continue;
-            }
-
-            if ($char === '/' && $i + 1 < $length && $sql[$i + 1] === '*') {
-                $end = self::blockCommentEnd($sql, $i, $length, $dialect);
-
-                if (self::isExecutableComment($sql, $i, $length)) {
-                    self::rejectPlaceholderInsideExecutableComment(\substr($sql, $i, $end - $i));
-                }
-
-                $i = $end;
+            if ($special !== null) {
+                $i = $special[1];
                 continue;
             }
 
