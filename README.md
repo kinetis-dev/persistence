@@ -58,7 +58,7 @@ check, no dispose hook registered) when it isn't installed.
 Installing this package is what opts it in — it registers the
 following automatically, through the `extra.kinetis` declaration in its
 `composer.json` (see
-[docs.kinetis.dev/cli.html](https://docs.kinetis.dev/cli.html)):
+[kinetis.dev/docs/cli.html](https://kinetis.dev/docs/cli.html)):
 
 - **Service binding**: with `DB_CONNECTION` set, the default connection
   is built and bound under its dialect contract
@@ -100,7 +100,7 @@ is scoped.
 Scoped keys follow the named-connection convention — the connection
 name inserts after the first segment: `DB_HOST` + `reporting` → `DB_REPORTING_HOST`.
 Full reference across every package:
-[docs.kinetis.dev/config.html](https://docs.kinetis.dev/config.html).
+[kinetis.dev/docs/config.html](https://kinetis.dev/docs/config.html).
 
 ## Installation
 
@@ -109,7 +109,7 @@ composer require kinetis/persistence
 ```
 
 Requires PHP 8.4+ and `kinetis/framework`. Full documentation:
-[docs.kinetis.dev/persistence.html](https://docs.kinetis.dev/persistence.html).
+[kinetis.dev/docs/persistence.html](https://kinetis.dev/docs/persistence.html).
 
 ## License
 
