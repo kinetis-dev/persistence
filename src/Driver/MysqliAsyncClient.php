@@ -25,10 +25,11 @@ use Throwable;
  * connections and suspend only their own Fiber — `concurrently()`
  * fan-out works at a fraction of a userland protocol client's CPU cost.
  *
- * Intended for persistent runtimes (FrankenPHP worker mode), where one
- * instance lives for the whole worker thread and its connections are
- * reused across requests. It works under PHP-FPM too, but there
- * {@see PdoMysqlClient} is the better fit — see
+ * Intended for persistent runtimes (FrankenPHP worker mode, or
+ * RoadRunner), where one instance lives for the whole worker — a thread
+ * under FrankenPHP, a separate process under RoadRunner — and its
+ * connections are reused across requests. It works under PHP-FPM too,
+ * but there {@see PdoMysqlClient} is the better fit — see
  * SqlConnectionFactory::fromConfig()'s driver selection.
  *
  * Event-loop integration: mysqli does not expose its socket file
@@ -126,8 +127,11 @@ final class MysqliAsyncClient implements MysqlLink
      * keep them for the process's lifetime; connections opened lazily
      * under load are numbered after every open client socket and can
      * land past the ceiling. Keep the total mysqli connections per
-     * process (worker threads x maxConnections) under ~1000 for the
-     * same reason.
+     * process under ~1000 for the same reason — under FrankenPHP, where
+     * several worker threads share one process's fd table, that's
+     * worker threads x maxConnections; under RoadRunner, where each
+     * worker is its own process with its own fd table, it's just
+     * maxConnections.
      *
      * Throws {@see ConnectionException} if the server is unreachable —
      * a warmed pool is an explicit request, so failing to open it is an

@@ -29,6 +29,26 @@ final class SqlConnectionFactoryTest extends TestCase
         self::assertInstanceOf(PdoMysqlClient::class, SqlConnectionFactory::fromConfig($config));
     }
 
+    public function test_auto_driver_selects_native_under_road_runner(): void
+    {
+        // RR_MODE=http is the same signal RuntimeDetector::detect() uses
+        // to pick RoadRunnerAdapter — 'auto' must treat it as a
+        // persistent runtime exactly like a real FrankenPHP worker.
+        $original = getenv('RR_MODE');
+        putenv('RR_MODE=http');
+
+        try {
+            $config = new Config([
+                'DB_CONNECTION' => 'mysql',
+                'DB_PASSWORD' => 'secret',
+            ]);
+
+            self::assertInstanceOf(MysqliAsyncClient::class, SqlConnectionFactory::fromConfig($config));
+        } finally {
+            putenv($original === false ? 'RR_MODE' : "RR_MODE={$original}");
+        }
+    }
+
     public function test_native_driver_builds_the_mysqli_async_client(): void
     {
         $config = new Config([

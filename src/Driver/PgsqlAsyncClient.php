@@ -38,8 +38,8 @@ use Throwable;
  * costs the caller one QueryException before the retry path takes over
  * — see {@see StaleConnectionException} for the full sequence.
  *
- * Intended primarily for persistent runtimes (FrankenPHP worker mode)
- * where connections outlive requests; under PHP-FPM prefer
+ * Intended primarily for persistent runtimes (FrankenPHP worker mode, or
+ * RoadRunner) where connections outlive requests; under PHP-FPM prefer
  * {@see PdoPgsqlClient} via SqlConnectionFactory's driver selection.
  *
  * Opening a connection (pool fill only) uses the blocking pg_connect();

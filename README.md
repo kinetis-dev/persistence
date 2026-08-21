@@ -83,7 +83,7 @@ is scoped.
 | `DB_NAME` | `app` | Database name. |
 | `DB_USER` | `app` | User. |
 | `DB_PASSWORD` | *(required)* | Password. |
-| `DB_DRIVER` | `auto` | `auto` (native under FrankenPHP worker mode, PDO otherwise), `native`, or `pdo`. |
+| `DB_DRIVER` | `auto` | `auto` (native under FrankenPHP worker mode or RoadRunner, PDO otherwise), `native`, or `pdo`. |
 | `DB_CHARSET` | `utf8mb4` (MySQL) | Connection charset. |
 | `DB_COLLATION` | — | MySQL collation (`SET NAMES ... COLLATE`). |
 | `DB_SSLMODE` | — | `disable`/`require`/`verify-ca`/`verify-full` on every driver; libpq additionally accepts `allow`/`prefer`. |
@@ -93,7 +93,7 @@ is scoped.
 | `DB_CONNECT_TIMEOUT` | — | Seconds. |
 | `DB_APP_NAME` | — | Postgres `application_name`. |
 | `DB_COMPRESSION` | — | MySQL protocol compression. |
-| `DB_MAX_CONNECTIONS` | `8` | Async drivers' pool width — per worker thread under FrankenPHP. |
+| `DB_MAX_CONNECTIONS` | `8` | Async drivers' pool width — per worker thread under FrankenPHP, per worker process under RoadRunner. |
 | `DB_WARM_CONNECTIONS` | `0` | Connections opened at boot instead of first use — load-bearing for the mysqli driver under worker mode. |
 | `DB_OPTIONS` | — | Legacy key=value string, translated where canonical equivalents exist. |
 
