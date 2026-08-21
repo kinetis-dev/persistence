@@ -6,6 +6,7 @@ namespace Kinetis\Persistence;
 
 use InvalidArgumentException;
 use Kinetis\Config\Config;
+use Kinetis\Config\Exception\InvalidConfigValueException;
 use Kinetis\Persistence\Contract\MysqlLink;
 use Kinetis\Persistence\Contract\PostgresLink;
 use Kinetis\Persistence\Driver\MysqliAsyncClient;
@@ -115,8 +116,7 @@ final class SqlConnectionFactory
         }
 
         $defaultPort = $dialect === 'mysql' ? 3306 : 5432;
-        $portValue = $config->get(Config::scopedKey('DB_PORT', $connection));
-        $port = $portValue !== null ? (int) $portValue : $defaultPort;
+        $port = $config->int(Config::scopedKey('DB_PORT', $connection), $defaultPort);
 
         $options = self::buildOptions($config, $connection, $poolOptions);
 
@@ -133,8 +133,8 @@ final class SqlConnectionFactory
         // under FrankenPHP worker mode the boot-time connect is what
         // keeps mysqli fds numbered below FD_SETSIZE (see
         // MysqliAsyncClient::warmUp()).
-        $envWarm = $config->get(Config::scopedKey('DB_WARM_CONNECTIONS', $connection));
-        $warmConnections = $poolOptions['warmConnections'] ?? ($envWarm !== null ? (int) $envWarm : 0);
+        $warmConnections = $poolOptions['warmConnections']
+            ?? $config->int(Config::scopedKey('DB_WARM_CONNECTIONS', $connection), 0);
 
         if ((int) $warmConnections > 0) {
             $client->warmUp((int) $warmConnections);
@@ -169,25 +169,32 @@ final class SqlConnectionFactory
             ?? $legacy['compression']
             ?? null;
 
-        $connectTimeout = $config->get(Config::scopedKey('DB_CONNECT_TIMEOUT', $connection))
-            ?? $legacy['connectTimeout']
-            ?? null;
+        $connectTimeoutKey = Config::scopedKey('DB_CONNECT_TIMEOUT', $connection);
+        $connectTimeout = $config->intOrNull($connectTimeoutKey);
+
+        if ($connectTimeout === null && ($legacy['connectTimeout'] ?? '') !== '') {
+            $legacyConnectTimeout = $legacy['connectTimeout'];
+
+            if (!is_numeric($legacyConnectTimeout)) {
+                throw InvalidConfigValueException::notAnInteger($connectTimeoutKey, $legacyConnectTimeout);
+            }
+
+            $connectTimeout = (int) $legacyConnectTimeout;
+        }
 
         // An explicit code-level poolOption wins; the connection-scoped
         // env key covers deployments tuning pool width without editing
         // bootstrap code (see docs/performance-tuning.md for sizing).
-        $envMaxConnections = $config->get(Config::scopedKey('DB_MAX_CONNECTIONS', $connection));
-
         /** @var int $maxConnections */
         $maxConnections = $poolOptions['maxConnections']
-            ?? ($envMaxConnections !== null ? (int) $envMaxConnections : 8);
+            ?? $config->int(Config::scopedKey('DB_MAX_CONNECTIONS', $connection), 8);
 
         return new ConnectionOptions(
             charset: $config->get(Config::scopedKey('DB_CHARSET', $connection)) ?? $legacy['charset'] ?? null,
             collation: $config->get(Config::scopedKey('DB_COLLATION', $connection)) ?? $legacy['collation'] ?? null,
             sslMode: $config->get(Config::scopedKey('DB_SSLMODE', $connection)) ?? $legacy['sslMode'] ?? null,
             sslCa: $config->get(Config::scopedKey('DB_SSL_CA', $connection)) ?? $legacy['sslCa'] ?? null,
-            connectTimeout: $connectTimeout !== null ? (int) $connectTimeout : null,
+            connectTimeout: $connectTimeout,
             applicationName: $config->get(Config::scopedKey('DB_APP_NAME', $connection)) ?? $legacy['applicationName'] ?? null,
             compression: $compression !== null ? \in_array(\strtolower((string) $compression), ['1', 'true', 'on', 'yes'], true) : null,
             maxConnections: $maxConnections,

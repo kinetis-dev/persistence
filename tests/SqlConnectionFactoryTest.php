@@ -6,6 +6,7 @@ namespace Kinetis\Persistence\Tests;
 
 use InvalidArgumentException;
 use Kinetis\Config\Config;
+use Kinetis\Config\Exception\InvalidConfigValueException;
 use Kinetis\Config\Exception\MissingConfigException;
 use Kinetis\Persistence\ConnectionOptions;
 use Kinetis\Persistence\Driver\MysqliAsyncClient;
@@ -388,6 +389,70 @@ final class SqlConnectionFactoryTest extends TestCase
         ]);
 
         self::assertSame(5, self::maxConnectionsOf(SqlConnectionFactory::fromConfig($config, 'analytics')));
+    }
+
+    public function test_a_non_numeric_db_max_connections_throws(): void
+    {
+        $this->expectException(InvalidConfigValueException::class);
+
+        SqlConnectionFactory::fromConfig(new Config([
+            'DB_CONNECTION' => 'mysql', 'DB_DRIVER' => 'native', 'DB_PASSWORD' => 's',
+            'DB_MAX_CONNECTIONS' => 'many',
+        ]));
+    }
+
+    public function test_a_non_numeric_db_port_throws(): void
+    {
+        $this->expectException(InvalidConfigValueException::class);
+
+        SqlConnectionFactory::fromConfig(new Config([
+            'DB_CONNECTION' => 'mysql', 'DB_DRIVER' => 'native', 'DB_PASSWORD' => 's',
+            'DB_PORT' => 'not-a-port',
+        ]));
+    }
+
+    public function test_a_non_numeric_db_warm_connections_throws(): void
+    {
+        $this->expectException(InvalidConfigValueException::class);
+
+        SqlConnectionFactory::fromConfig(new Config([
+            'DB_CONNECTION' => 'mysql', 'DB_DRIVER' => 'native', 'DB_PASSWORD' => 's',
+            'DB_WARM_CONNECTIONS' => 'lots',
+        ]));
+    }
+
+    public function test_a_non_numeric_db_connect_timeout_throws(): void
+    {
+        $this->expectException(InvalidConfigValueException::class);
+
+        SqlConnectionFactory::fromConfig(new Config([
+            'DB_CONNECTION' => 'mysql', 'DB_DRIVER' => 'native', 'DB_PASSWORD' => 's',
+            'DB_CONNECT_TIMEOUT' => 'slow',
+        ]));
+    }
+
+    public function test_the_legacy_db_options_connect_timeout_spelling_still_works(): void
+    {
+        $client = SqlConnectionFactory::fromConfig(new Config([
+            'DB_CONNECTION' => 'pgsql',
+            'DB_DRIVER' => 'native',
+            'DB_PASSWORD' => 's',
+            'DB_OPTIONS' => 'connect_timeout=9',
+        ]));
+
+        $options = self::property($client, 'options');
+        self::assertInstanceOf(ConnectionOptions::class, $options);
+        self::assertSame(9, $options->connectTimeout);
+    }
+
+    public function test_a_non_numeric_legacy_connect_timeout_throws(): void
+    {
+        $this->expectException(InvalidConfigValueException::class);
+
+        SqlConnectionFactory::fromConfig(new Config([
+            'DB_CONNECTION' => 'pgsql', 'DB_DRIVER' => 'native', 'DB_PASSWORD' => 's',
+            'DB_OPTIONS' => 'connect_timeout=forever',
+        ]));
     }
 
     #[\PHPUnit\Framework\Attributes\RequiresPhpExtension('mysqli')]
