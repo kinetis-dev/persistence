@@ -1,0 +1,25 @@
+parameters:
+    level: 8
+    paths:
+        - src
+
+    ignoreErrors:
+        # These traits exist for *consumers'* test suites, so nothing in
+        # src/ will ever use them — "used zero times" is their permanent,
+        # correct state here, not a sign of dead code. They are exercised
+        # against a real database by this package's own
+        # tests/Integration/DatabaseTransactionsTest and
+        # DatabaseTruncationTest, which PHPStan's `paths` deliberately
+        # doesn't cover.
+        -
+            identifier: trait.unused
+            path: src/Testing/DatabaseTransactions.php
+        -
+            identifier: trait.unused
+            path: src/Testing/DatabaseTruncation.php
+
+services:
+    -
+        class: Kinetis\Linting\NoStaticPropertiesRule
+        tags:
+            - phpstan.rules.rule
