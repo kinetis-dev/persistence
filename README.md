@@ -18,6 +18,10 @@
 
 ---
 
+Part of [Kinetis](https://kinetis.dev/), a non-blocking PHP framework for
+API-first applications, developed in the
+[kinetis-dev/kinetis](https://github.com/kinetis-dev/kinetis) monorepo.
+
 MySQL and Postgres via `amphp/mysql`/`amphp/postgres`, both sharing the
 `Amp\Sql\SqlLink`/`SqlTransaction` abstraction — this package doesn't
 need to know which one it's talking to.
@@ -95,7 +99,6 @@ is scoped.
 | `DB_COMPRESSION` | — | MySQL protocol compression. |
 | `DB_MAX_CONNECTIONS` | `8` | Async drivers' pool width — per worker thread under FrankenPHP, per worker process under RoadRunner. |
 | `DB_WARM_CONNECTIONS` | `0` | Connections opened at boot instead of first use — load-bearing for the mysqli driver under worker mode. |
-| `DB_OPTIONS` | — | Legacy key=value string, translated where canonical equivalents exist. |
 
 Scoped keys follow the named-connection convention — the connection
 name inserts after the first segment: `DB_HOST` + `reporting` → `DB_REPORTING_HOST`.
@@ -108,7 +111,7 @@ Full reference across every package:
 composer require kinetis/persistence
 ```
 
-Requires PHP 8.4+ and `kinetis/framework`. Full documentation:
+Requires PHP 8.4+ and [`kinetis/framework`](https://github.com/kinetis-dev/framework). Full documentation:
 [kinetis.dev/docs/persistence.html](https://kinetis.dev/docs/persistence.html).
 
 ## License

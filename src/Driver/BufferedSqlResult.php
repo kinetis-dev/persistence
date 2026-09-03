@@ -26,7 +26,7 @@ final class BufferedSqlResult implements SqlResult, IteratorAggregate
         private readonly array $rows,
         private readonly ?int $rowCount,
         private readonly ?int $columnCount,
-        private readonly ?int $lastInsertId = null,
+        private readonly int|string|null $lastInsertId = null,
     ) {}
 
     #[\Override]
@@ -54,7 +54,7 @@ final class BufferedSqlResult implements SqlResult, IteratorAggregate
     }
 
     #[\Override]
-    public function getLastInsertId(): ?int
+    public function getLastInsertId(): int|string|null
     {
         return $this->lastInsertId;
     }

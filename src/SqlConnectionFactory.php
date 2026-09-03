@@ -6,7 +6,6 @@ namespace Kinetis\Persistence;
 
 use InvalidArgumentException;
 use Kinetis\Config\Config;
-use Kinetis\Config\Exception\InvalidConfigValueException;
 use Kinetis\Persistence\Contract\MysqlLink;
 use Kinetis\Persistence\Contract\PostgresLink;
 use Kinetis\Persistence\Driver\MysqliAsyncClient;
@@ -45,13 +44,6 @@ use Kinetis\Persistence\Driver\PgsqlAsyncClient;
  * translating them to its native mechanism, and rejecting — loudly, at
  * construction — any option it cannot honor.
  *
- * The legacy `DB_OPTIONS` string is still accepted as a migration path:
- * key=value pairs whose keys have canonical equivalents are translated
- * (a discrete key wins over a DB_OPTIONS spelling of the same option);
- * anything untranslatable is passed through raw only to drivers whose
- * backend natively accepts free-form connection-string keys (libpq),
- * and rejected everywhere else.
- *
  * $connection selects a named connection via Config::scopedKey() —
  * 'default' reads the plain DB_* keys; any other name reads DB_{NAME}_*.
  *
@@ -64,29 +56,6 @@ use Kinetis\Persistence\Driver\PgsqlAsyncClient;
  */
 final class SqlConnectionFactory
 {
-    /** Legacy DB_OPTIONS keys with canonical equivalents, in every historical spelling. */
-    private const array LEGACY_KEY_MAP = [
-        'charset' => 'charset',
-        'client_encoding' => 'charset',
-        'collate' => 'collation',
-        'collation' => 'collation',
-        'sslmode' => 'sslMode',
-        'sslrootcert' => 'sslCa',
-        'ssl_ca' => 'sslCa',
-        'ssl-ca' => 'sslCa',
-        'sslcert' => 'sslCert',
-        'ssl_cert' => 'sslCert',
-        'ssl-cert' => 'sslCert',
-        'sslkey' => 'sslKey',
-        'ssl_key' => 'sslKey',
-        'ssl-key' => 'sslKey',
-        'connect_timeout' => 'connectTimeout',
-        'application_name' => 'applicationName',
-        'applicationname' => 'applicationName',
-        'compress' => 'compression',
-        'compression' => 'compression',
-    ];
-
     /**
      * @param array<string, mixed> $poolOptions
      */
@@ -117,9 +86,28 @@ final class SqlConnectionFactory
         }
 
         $defaultPort = $dialect === 'mysql' ? 3306 : 5432;
-        $port = $config->int(Config::scopedKey('DB_PORT', $connection), $defaultPort);
+        $portKey = Config::scopedKey('DB_PORT', $connection);
+        $port = $config->int($portKey, $defaultPort);
+
+        if ($port < 1 || $port > 65535) {
+            throw new InvalidArgumentException("{$portKey} must be a valid TCP port (1-65535), got {$port}.");
+        }
 
         $options = self::buildOptions($config, $connection, $poolOptions);
+
+        // Read and validated before any driver is constructed — a bad
+        // DB_WARM_CONNECTIONS must never depend on which driver happens
+        // to be lazy about opening a real connection; the invariant
+        // holds regardless of that implementation detail. An explicit
+        // code-level poolOption wins over the env key, same as
+        // maxConnections in buildOptions().
+        $warmConnectionsKey = Config::scopedKey('DB_WARM_CONNECTIONS', $connection);
+        $warmConnections = self::intPoolOption($poolOptions, 'warmConnections')
+            ?? $config->int($warmConnectionsKey, 0);
+
+        if ($warmConnections < 0) {
+            throw new InvalidArgumentException("{$warmConnectionsKey} must not be negative, got {$warmConnections}.");
+        }
 
         $client = match (true) {
             $dialect === 'mysql' && $driver === 'native' => new MysqliAsyncClient($host, $user, $password, $database, $port, $options),
@@ -128,20 +116,45 @@ final class SqlConnectionFactory
             default => new PdoPgsqlClient($host, $user, $password, $database, $port, $options),
         };
 
-        // An explicit code-level poolOption wins over the env key, same
-        // as maxConnections. Warming connects right here, so a wrong
-        // DB config fails at boot instead of on the first query — and
-        // under a persistent worker (FrankenPHP or RoadRunner) the
-        // boot-time connect is what keeps mysqli fds numbered below
-        // FD_SETSIZE (see MysqliAsyncClient::warmUp()).
-        $warmConnections = $poolOptions['warmConnections']
-            ?? $config->int(Config::scopedKey('DB_WARM_CONNECTIONS', $connection), 0);
-
-        if ((int) $warmConnections > 0) {
-            $client->warmUp((int) $warmConnections);
+        // Warming connects right here, so a wrong DB config fails at
+        // boot instead of on the first query — and under a persistent
+        // worker (FrankenPHP or RoadRunner) the boot-time connect is
+        // what keeps mysqli fds numbered below FD_SETSIZE (see
+        // MysqliAsyncClient::warmUp()).
+        if ($warmConnections > 0) {
+            $client->warmUp($warmConnections);
         }
 
         return $client;
+    }
+
+    /**
+     * A $poolOptions override is declared array<string, mixed> — real
+     * consumer code, not a Config-parsed string — so an int-typed pool
+     * setting given the wrong shape (a string, a float, an object) must
+     * be a clear, owning-factory configuration error naming the actual
+     * type given, not an incidental TypeError several calls deeper once
+     * it reaches a real int-typed constructor parameter (ConnectionOptions'
+     * own $maxConnections, most notably). Returns null when the key is
+     * genuinely absent, so the caller's own Config-key fallback applies.
+     *
+     * @param array<string, mixed> $poolOptions
+     */
+    private static function intPoolOption(array $poolOptions, string $key): ?int
+    {
+        if (!\array_key_exists($key, $poolOptions)) {
+            return null;
+        }
+
+        $value = $poolOptions[$key];
+
+        if (!\is_int($value)) {
+            throw new InvalidArgumentException(
+                "\$poolOptions['{$key}'] must be an int, got " . \get_debug_type($value) . '.',
+            );
+        }
+
+        return $value;
     }
 
     /**
@@ -164,59 +177,30 @@ final class SqlConnectionFactory
      */
     private static function buildOptions(Config $config, string $connection, array $poolOptions): ConnectionOptions
     {
-        // Legacy DB_OPTIONS: translate what has a canonical equivalent,
-        // keep the rest for backends that accept free-form keys.
-        $legacy = [];
-        $extra = [];
-        $legacyString = $config->get(Config::scopedKey('DB_OPTIONS', $connection));
-
-        foreach (\preg_split('/\s+/', $legacyString ?? '', flags: \PREG_SPLIT_NO_EMPTY) ?: [] as $pair) {
-            [$key, $value] = \array_pad(\explode('=', $pair, 2), 2, '');
-            $canonical = self::LEGACY_KEY_MAP[\strtolower($key)] ?? null;
-
-            if ($canonical !== null) {
-                $legacy[$canonical] = $value;
-            } else {
-                $extra[] = $pair;
-            }
-        }
-
-        $compression = $config->get(Config::scopedKey('DB_COMPRESSION', $connection))
-            ?? $legacy['compression']
-            ?? null;
-
-        $connectTimeoutKey = Config::scopedKey('DB_CONNECT_TIMEOUT', $connection);
-        $connectTimeout = $config->intOrNull($connectTimeoutKey);
-
-        if ($connectTimeout === null && ($legacy['connectTimeout'] ?? '') !== '') {
-            $legacyConnectTimeout = $legacy['connectTimeout'];
-
-            if (!is_numeric($legacyConnectTimeout)) {
-                throw InvalidConfigValueException::notAnInteger($connectTimeoutKey, $legacyConnectTimeout);
-            }
-
-            $connectTimeout = (int) $legacyConnectTimeout;
-        }
+        $compression = $config->get(Config::scopedKey('DB_COMPRESSION', $connection));
+        $connectTimeout = $config->intOrNull(Config::scopedKey('DB_CONNECT_TIMEOUT', $connection));
 
         // An explicit code-level poolOption wins; the connection-scoped
         // env key covers deployments tuning pool width without editing
         // bootstrap code (see docs/performance-tuning.md for sizing).
-        /** @var int $maxConnections */
-        $maxConnections = $poolOptions['maxConnections']
+        // The lower bound (>= 1) is ConnectionOptions' own job; this only
+        // guards the type, so a non-int poolOption is this factory's own
+        // clear error rather than an incidental TypeError from that
+        // constructor.
+        $maxConnections = self::intPoolOption($poolOptions, 'maxConnections')
             ?? $config->int(Config::scopedKey('DB_MAX_CONNECTIONS', $connection), 8);
 
         return new ConnectionOptions(
-            charset: $config->get(Config::scopedKey('DB_CHARSET', $connection)) ?? $legacy['charset'] ?? null,
-            collation: $config->get(Config::scopedKey('DB_COLLATION', $connection)) ?? $legacy['collation'] ?? null,
-            sslMode: $config->get(Config::scopedKey('DB_SSLMODE', $connection)) ?? $legacy['sslMode'] ?? null,
-            sslCa: $config->get(Config::scopedKey('DB_SSL_CA', $connection)) ?? $legacy['sslCa'] ?? null,
+            charset: $config->get(Config::scopedKey('DB_CHARSET', $connection)),
+            collation: $config->get(Config::scopedKey('DB_COLLATION', $connection)),
+            sslMode: $config->get(Config::scopedKey('DB_SSLMODE', $connection)),
+            sslCa: $config->get(Config::scopedKey('DB_SSL_CA', $connection)),
             connectTimeout: $connectTimeout,
-            applicationName: $config->get(Config::scopedKey('DB_APP_NAME', $connection)) ?? $legacy['applicationName'] ?? null,
+            applicationName: $config->get(Config::scopedKey('DB_APP_NAME', $connection)),
             compression: $compression !== null ? \in_array(\strtolower((string) $compression), ['1', 'true', 'on', 'yes'], true) : null,
             maxConnections: $maxConnections,
-            extraConnectionString: \implode(' ', $extra),
-            sslCert: $config->get(Config::scopedKey('DB_SSL_CERT', $connection)) ?? $legacy['sslCert'] ?? null,
-            sslKey: $config->get(Config::scopedKey('DB_SSL_KEY', $connection)) ?? $legacy['sslKey'] ?? null,
+            sslCert: $config->get(Config::scopedKey('DB_SSL_CERT', $connection)),
+            sslKey: $config->get(Config::scopedKey('DB_SSL_KEY', $connection)),
         );
     }
 }

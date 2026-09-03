@@ -17,6 +17,12 @@ final class FakeSqlTransaction implements SqlTransaction
     /** Set to make commit() blow up, exercising the guard's error path. */
     public bool $failOnCommit = false;
 
+    /** Set to make isActive() blow up — a real driver's inspection call can fail too. */
+    public bool $failOnIsActive = false;
+
+    /** Set to make rollback() blow up, leaving the transaction's own state uncertain. */
+    public bool $failOnRollback = false;
+
     public function commit(): void
     {
         if ($this->failOnCommit) {
@@ -28,11 +34,19 @@ final class FakeSqlTransaction implements SqlTransaction
 
     public function rollback(): void
     {
+        if ($this->failOnRollback) {
+            throw new LogicException('Rollback failed.');
+        }
+
         $this->rolledBack = true;
     }
 
     public function isActive(): bool
     {
+        if ($this->failOnIsActive) {
+            throw new LogicException('isActive() failed.');
+        }
+
         return !$this->committed && !$this->rolledBack;
     }
 

@@ -33,4 +33,17 @@ final class BufferedSqlResultTest extends TestCase
     {
         self::assertNull(new BufferedSqlResult([], 0, 2)->getLastInsertId());
     }
+
+    /**
+     * MySQL's UNSIGNED BIGINT allows generated ids past PHP_INT_MAX —
+     * the contract carries such a value as its own canonical decimal
+     * string rather than forcing a lossy int cast, and this class must
+     * store and return it unchanged.
+     */
+    public function test_last_insert_id_holds_a_string_beyond_php_int_max_unchanged(): void
+    {
+        $result = new BufferedSqlResult([], 1, null, '18446744073709551615');
+
+        self::assertSame('18446744073709551615', $result->getLastInsertId());
+    }
 }

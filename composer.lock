@@ -4,28 +4,28 @@
         "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
         "This file is @generated automatically"
     ],
-    "content-hash": "b92c1df2b1a9eafa9927acdc5c1b92d1",
+    "content-hash": "d8a77b49c89de7a95256928b4038a734",
     "packages": [
         {
             "name": "graham-campbell/result-type",
-            "version": "v1.1.4",
+            "version": "v1.2.0",
             "source": {
                 "type": "git",
                 "url": "https://github.com/GrahamCampbell/Result-Type.git",
-                "reference": "e01f4a821471308ba86aa202fed6698b6b695e3b"
+                "reference": "adccca3324eece92ca35463648c12b9e6293c05b"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/GrahamCampbell/Result-Type/zipball/e01f4a821471308ba86aa202fed6698b6b695e3b",
-                "reference": "e01f4a821471308ba86aa202fed6698b6b695e3b",
+                "url": "https://api.github.com/repos/GrahamCampbell/Result-Type/zipball/adccca3324eece92ca35463648c12b9e6293c05b",
+                "reference": "adccca3324eece92ca35463648c12b9e6293c05b",
                 "shasum": ""
             },
             "require": {
                 "php": "^7.2.5 || ^8.0",
-                "phpoption/phpoption": "^1.9.5"
+                "phpoption/phpoption": "^1.10"
             },
             "require-dev": {
-                "phpunit/phpunit": "^8.5.41 || ^9.6.22 || ^10.5.45 || ^11.5.7"
+                "phpunit/phpunit": "^8.5.52 || ^9.6.34 || ^10.5.63 || ^11.5.55 || ^12.5.14"
             },
             "type": "library",
             "autoload": {
@@ -54,7 +54,7 @@
             ],
             "support": {
                 "issues": "https://github.com/GrahamCampbell/Result-Type/issues",
-                "source": "https://github.com/GrahamCampbell/Result-Type/tree/v1.1.4"
+                "source": "https://github.com/GrahamCampbell/Result-Type/tree/v1.2.0"
             },
             "funding": [
                 {
@@ -66,7 +66,7 @@
                     "type": "tidelift"
                 }
             ],
-            "time": "2025-12-27T19:43:20+00:00"
+            "time": "2026-08-24T09:06:52+00:00"
         },
         {
             "name": "kinetis/framework",
@@ -279,16 +279,16 @@
         },
         {
             "name": "phpoption/phpoption",
-            "version": "1.9.5",
+            "version": "1.10.0",
             "source": {
                 "type": "git",
                 "url": "https://github.com/schmittjoh/php-option.git",
-                "reference": "75365b91986c2405cf5e1e012c5595cd487a98be"
+                "reference": "67b192b6a42ec03944b972d6e633ddec78ad2c6d"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/schmittjoh/php-option/zipball/75365b91986c2405cf5e1e012c5595cd487a98be",
-                "reference": "75365b91986c2405cf5e1e012c5595cd487a98be",
+                "url": "https://api.github.com/repos/schmittjoh/php-option/zipball/67b192b6a42ec03944b972d6e633ddec78ad2c6d",
+                "reference": "67b192b6a42ec03944b972d6e633ddec78ad2c6d",
                 "shasum": ""
             },
             "require": {
@@ -296,7 +296,7 @@
             },
             "require-dev": {
                 "bamarni/composer-bin-plugin": "^1.8.2",
-                "phpunit/phpunit": "^8.5.44 || ^9.6.25 || ^10.5.53 || ^11.5.34"
+                "phpunit/phpunit": "^8.5.54 || ^9.6.36 || ^10.5.64 || ^11.5.56 || ^12.5.33"
             },
             "type": "library",
             "extra": {
@@ -338,7 +338,7 @@
             ],
             "support": {
                 "issues": "https://github.com/schmittjoh/php-option/issues",
-                "source": "https://github.com/schmittjoh/php-option/tree/1.9.5"
+                "source": "https://github.com/schmittjoh/php-option/tree/1.10.0"
             },
             "funding": [
                 {
@@ -350,7 +350,7 @@
                     "type": "tidelift"
                 }
             ],
-            "time": "2025-12-27T19:41:33+00:00"
+            "time": "2026-08-24T00:54:40+00:00"
         },
         {
             "name": "psr/container",
@@ -3120,7 +3120,7 @@
             "dist": {
                 "type": "path",
                 "url": "../mcp",
-                "reference": "aaab278bd50bfde0f4f79e1733fc6c4db6865afa"
+                "reference": "41feda508d60f5629fbbe05df77c5fb90431ef68"
             },
             "require": {
                 "kinetis/framework": "dev-main",
@@ -3143,7 +3143,8 @@
             "extra": {
                 "kinetis": {
                     "scan": "Kinetis\\Mcp\\",
-                    "bootstrap": "Kinetis\\Mcp\\PackageBootstrap"
+                    "bootstrap": "Kinetis\\Mcp\\PackageBootstrap",
+                    "discovery": "Kinetis\\Mcp\\McpRegistry"
                 }
             },
             "autoload": {
@@ -3165,6 +3166,59 @@
                 }
             ],
             "description": "The Model Context Protocol server for Kinetis — tools and resources declared with attributes and validated like HTTP routes, served over stdio and as an ordinary /mcp route.",
+            "transport-options": {
+                "relative": true
+            }
+        },
+        {
+            "name": "kinetis/queue",
+            "version": "dev-main",
+            "dist": {
+                "type": "path",
+                "url": "../queue",
+                "reference": "d40db8a8664e3cff00f1fbe91dac5734ca567851"
+            },
+            "require": {
+                "kinetis/framework": "dev-main",
+                "php": "^8.4",
+                "psr/container": "^2.0.2",
+                "psr/log": "^3.0.2"
+            },
+            "require-dev": {
+                "infection/infection": "^0.35.0",
+                "phpstan/phpstan": "^2.2.8",
+                "phpunit/phpunit": "^12.5.33",
+                "vimeo/psalm": "^6.16.1"
+            },
+            "suggest": {
+                "ext-pcntl": "Lets `kinetis queue:work` stop gracefully on SIGTERM, finishing the job in flight instead of being killed mid-job. Not loaded by default in the official PHP Docker images."
+            },
+            "type": "library",
+            "extra": {
+                "kinetis": {
+                    "scan": "Kinetis\\Queue\\Console\\",
+                    "bootstrap": "Kinetis\\Queue\\PackageBootstrap"
+                }
+            },
+            "autoload": {
+                "psr-4": {
+                    "Kinetis\\Queue\\": "src/"
+                }
+            },
+            "autoload-dev": {
+                "psr-4": {
+                    "Kinetis\\Queue\\Tests\\": "tests/"
+                }
+            },
+            "license": [
+                "MIT"
+            ],
+            "authors": [
+                {
+                    "name": "Alon Noy"
+                }
+            ],
+            "description": "A backend-agnostic background job queue for Kinetis — no fluent job-scheduling DSL. Redis, SQL, SQS, and RabbitMQ backends each live in their own separate package.",
             "transport-options": {
                 "relative": true
             }
@@ -7122,7 +7176,8 @@
     "minimum-stability": "stable",
     "stability-flags": {
         "kinetis/framework": 20,
-        "kinetis/mcp": 20
+        "kinetis/mcp": 20,
+        "kinetis/queue": 20
     },
     "prefer-stable": true,
     "prefer-lowest": false,

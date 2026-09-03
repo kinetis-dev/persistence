@@ -8,12 +8,11 @@ use InvalidArgumentException;
 
 /**
  * The canonical, driver-neutral connection option set. One instance is
- * built by {@see SqlConnectionFactory} from Config (discrete DB_* keys,
- * plus a translated legacy DB_OPTIONS string) and handed to whichever
- * driver gets constructed — each driver owns the translation from these
- * canonical fields to its native mechanism (connection-string keys for
- * libpq, mysqli_options()/set_charset() for mysqli, DSN keys and
- * attributes for PDO).
+ * built by {@see SqlConnectionFactory} from Config's discrete DB_* keys
+ * and handed to whichever driver gets constructed — each driver owns
+ * the translation from these canonical fields to its native mechanism
+ * (connection-string keys for libpq, mysqli_options()/set_charset() for
+ * mysqli, DSN keys and attributes for PDO).
  *
  * A field the selected driver cannot honor is a construction-time
  * InvalidArgumentException naming the field and the driver — never a
@@ -22,6 +21,9 @@ use InvalidArgumentException;
  * $extraConnectionString is the raw escape hatch for backends whose
  * native configuration surface *is* a free-form key/value string (libpq)
  * — drivers without such a surface (mysqli, PDO MySQL) reject it loudly.
+ * SqlConnectionFactory never populates it from Config; it's a
+ * code-level-only option for a caller constructing ConnectionOptions
+ * directly.
  */
 final readonly class ConnectionOptions
 {

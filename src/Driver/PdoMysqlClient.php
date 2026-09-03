@@ -63,13 +63,12 @@ final class PdoMysqlClient implements MysqlLink, PrefersPreparedStatements
     {
         /** @var list<array<string, mixed>> $rows */
         $rows = $statement->columnCount() > 0 ? $statement->fetchAll(PDO::FETCH_ASSOC) : [];
-        $lastInsertId = (int) ($this->connection()->lastInsertId() ?: 0);
 
         return new BufferedSqlResult(
             $rows,
             $statement->columnCount() > 0 ? \count($rows) : $statement->rowCount(),
             $statement->columnCount() > 0 ? $statement->columnCount() : null,
-            $lastInsertId !== 0 ? $lastInsertId : null,
+            MysqlInsertId::normalize($this->connection()->lastInsertId()),
         );
     }
 

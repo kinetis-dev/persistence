@@ -14,6 +14,7 @@ use Kinetis\Persistence\Driver\PdoMysqlClient;
 use Kinetis\Persistence\Driver\PdoPgsqlClient;
 use Kinetis\Persistence\Driver\PgsqlAsyncClient;
 use Kinetis\Persistence\SqlConnectionFactory;
+use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
 
 final class SqlConnectionFactoryTest extends TestCase
@@ -153,69 +154,6 @@ final class SqlConnectionFactoryTest extends TestCase
         SqlConnectionFactory::fromConfig($config);
     }
 
-    public function test_legacy_db_options_keys_with_canonical_equivalents_are_translated(): void
-    {
-        // charset=latin1 has a canonical equivalent; it must not land in
-        // extraConnectionString (which the mysqli driver would reject),
-        // and must therefore construct fine on a driver with no free-form
-        // string support.
-        $config = new Config([
-            'DB_CONNECTION' => 'mysql',
-            'DB_DRIVER' => 'native',
-            'DB_PASSWORD' => 'secret',
-            'DB_OPTIONS' => 'charset=latin1 compress=on',
-        ]);
-
-        self::assertInstanceOf(MysqliAsyncClient::class, SqlConnectionFactory::fromConfig($config));
-    }
-
-    public function test_legacy_db_options_keys_are_matched_case_insensitively(): void
-    {
-        // LEGACY_KEY_MAP's own docblock promises "every historical
-        // spelling" — a key arriving in any case must still translate,
-        // not silently fall through to extraConnectionString (which the
-        // mysqli driver used below would then reject outright).
-        $client = SqlConnectionFactory::fromConfig(new Config([
-            'DB_CONNECTION' => 'mysql',
-            'DB_DRIVER' => 'native',
-            'DB_PASSWORD' => 's',
-            'DB_OPTIONS' => 'CHARSET=latin1 COMPRESS=on',
-        ]));
-
-        $options = self::property($client, 'options');
-        self::assertInstanceOf(ConnectionOptions::class, $options);
-        self::assertSame('latin1', $options->charset);
-        self::assertTrue($options->compression);
-    }
-
-    public function test_untranslatable_db_options_keys_are_rejected_by_drivers_without_free_form_strings(): void
-    {
-        $config = new Config([
-            'DB_CONNECTION' => 'mysql',
-            'DB_DRIVER' => 'native',
-            'DB_PASSWORD' => 'secret',
-            'DB_OPTIONS' => 'local-infile=1',
-        ]);
-
-        $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('extraConnectionString');
-        SqlConnectionFactory::fromConfig($config);
-    }
-
-    public function test_untranslatable_db_options_keys_pass_through_to_libpq_backed_drivers(): void
-    {
-        // libpq accepts free-form connection-string keys and validates
-        // them itself at connect time — construction must succeed.
-        $config = new Config([
-            'DB_CONNECTION' => 'pgsql',
-            'DB_DRIVER' => 'native',
-            'DB_PASSWORD' => 'secret',
-            'DB_OPTIONS' => 'target_session_attrs=read-write',
-        ]);
-
-        self::assertInstanceOf(PgsqlAsyncClient::class, SqlConnectionFactory::fromConfig($config));
-    }
-
     public function test_connection_options_reject_a_non_identifier_charset(): void
     {
         $this->expectException(InvalidArgumentException::class);
@@ -272,53 +210,6 @@ final class SqlConnectionFactoryTest extends TestCase
         self::assertSame('myapp', $options->applicationName);
     }
 
-    public function test_a_discrete_key_wins_over_the_db_options_spelling(): void
-    {
-        $client = SqlConnectionFactory::fromConfig(new Config([
-            'DB_CONNECTION' => 'mysql',
-            'DB_DRIVER' => 'native',
-            'DB_PASSWORD' => 's',
-            'DB_CHARSET' => 'utf8mb4',
-            'DB_OPTIONS' => 'charset=latin1 compress=on',
-        ]));
-
-        $options = self::property($client, 'options');
-        self::assertInstanceOf(ConnectionOptions::class, $options);
-        self::assertSame('utf8mb4', $options->charset);
-        self::assertTrue($options->compression);
-    }
-
-    public function test_db_options_values_may_contain_equals_signs(): void
-    {
-        // explode('=', ..., 2): only the first "=" splits key from value.
-        $client = SqlConnectionFactory::fromConfig(new Config([
-            'DB_CONNECTION' => 'pgsql',
-            'DB_DRIVER' => 'native',
-            'DB_PASSWORD' => 's',
-            'DB_OPTIONS' => 'application_name=a=b',
-        ]));
-
-        $options = self::property($client, 'options');
-        self::assertInstanceOf(ConnectionOptions::class, $options);
-        self::assertSame('a=b', $options->applicationName);
-    }
-
-    public function test_a_bare_db_options_key_without_a_value_parses_as_an_empty_value(): void
-    {
-        // "compress" with no "=" means an empty value, which is falsy —
-        // not a parse error, and not silently treated as unknown.
-        $client = SqlConnectionFactory::fromConfig(new Config([
-            'DB_CONNECTION' => 'mysql',
-            'DB_DRIVER' => 'native',
-            'DB_PASSWORD' => 's',
-            'DB_OPTIONS' => 'compress',
-        ]));
-
-        $options = self::property($client, 'options');
-        self::assertInstanceOf(ConnectionOptions::class, $options);
-        self::assertFalse($options->compression);
-    }
-
     public function test_compression_truthy_spellings_parse_to_true(): void
     {
         foreach (['1', 'true', 'on', 'yes'] as $spelling) {
@@ -360,6 +251,41 @@ final class SqlConnectionFactoryTest extends TestCase
         $options = self::property($client, 'options');
         self::assertInstanceOf(ConnectionOptions::class, $options);
         self::assertSame(3, $options->maxConnections);
+    }
+
+    /**
+     * @return list<array{mixed}>
+     */
+    public static function nonIntPoolOptionValues(): array
+    {
+        return [
+            'a string' => ['garbage'],
+            'a float' => [1.9],
+            'an object' => [new \stdClass()],
+            'a bool' => [true],
+        ];
+    }
+
+    #[DataProvider('nonIntPoolOptionValues')]
+    public function test_a_non_int_max_connections_pool_option_is_a_clear_configuration_error(mixed $value): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage("\$poolOptions['maxConnections'] must be an int, got");
+
+        SqlConnectionFactory::fromConfig(new Config([
+            'DB_CONNECTION' => 'mysql', 'DB_DRIVER' => 'native', 'DB_PASSWORD' => 's',
+        ]), poolOptions: ['maxConnections' => $value]);
+    }
+
+    #[DataProvider('nonIntPoolOptionValues')]
+    public function test_a_non_int_warm_connections_pool_option_is_a_clear_configuration_error(mixed $value): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage("\$poolOptions['warmConnections'] must be an int, got");
+
+        SqlConnectionFactory::fromConfig(new Config([
+            'DB_CONNECTION' => 'mysql', 'DB_DRIVER' => 'native', 'DB_PASSWORD' => 's',
+        ]), poolOptions: ['warmConnections' => $value]);
     }
 
     public function test_db_max_connections_env_key_sizes_the_pool(): void
@@ -441,6 +367,41 @@ final class SqlConnectionFactoryTest extends TestCase
         ]));
     }
 
+    /**
+     * @return list<array{string}>
+     */
+    public static function outOfRangePortCases(): array
+    {
+        return [
+            'zero' => ['0'],
+            'negative' => ['-1'],
+            'beyond 65535' => ['65536'],
+        ];
+    }
+
+    #[DataProvider('outOfRangePortCases')]
+    public function test_a_db_port_outside_the_valid_tcp_range_throws(string $port): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('DB_PORT must be a valid TCP port');
+
+        SqlConnectionFactory::fromConfig(new Config([
+            'DB_CONNECTION' => 'mysql', 'DB_DRIVER' => 'native', 'DB_PASSWORD' => 's',
+            'DB_PORT' => $port,
+        ]));
+    }
+
+    public function test_a_negative_db_warm_connections_throws(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('DB_WARM_CONNECTIONS must not be negative');
+
+        SqlConnectionFactory::fromConfig(new Config([
+            'DB_CONNECTION' => 'mysql', 'DB_DRIVER' => 'native', 'DB_PASSWORD' => 's',
+            'DB_WARM_CONNECTIONS' => '-1',
+        ]));
+    }
+
     public function test_a_non_numeric_db_connect_timeout_throws(): void
     {
         $this->expectException(InvalidConfigValueException::class);
@@ -448,30 +409,6 @@ final class SqlConnectionFactoryTest extends TestCase
         SqlConnectionFactory::fromConfig(new Config([
             'DB_CONNECTION' => 'mysql', 'DB_DRIVER' => 'native', 'DB_PASSWORD' => 's',
             'DB_CONNECT_TIMEOUT' => 'slow',
-        ]));
-    }
-
-    public function test_the_legacy_db_options_connect_timeout_spelling_still_works(): void
-    {
-        $client = SqlConnectionFactory::fromConfig(new Config([
-            'DB_CONNECTION' => 'pgsql',
-            'DB_DRIVER' => 'native',
-            'DB_PASSWORD' => 's',
-            'DB_OPTIONS' => 'connect_timeout=9',
-        ]));
-
-        $options = self::property($client, 'options');
-        self::assertInstanceOf(ConnectionOptions::class, $options);
-        self::assertSame(9, $options->connectTimeout);
-    }
-
-    public function test_a_non_numeric_legacy_connect_timeout_throws(): void
-    {
-        $this->expectException(InvalidConfigValueException::class);
-
-        SqlConnectionFactory::fromConfig(new Config([
-            'DB_CONNECTION' => 'pgsql', 'DB_DRIVER' => 'native', 'DB_PASSWORD' => 's',
-            'DB_OPTIONS' => 'connect_timeout=forever',
         ]));
     }
 
@@ -554,7 +491,7 @@ final class SqlConnectionFactoryTest extends TestCase
         $client->warmUp(1);
     }
 
-    public function test_db_ssl_ca_reaches_the_driver_and_legacy_sslrootcert_translates(): void
+    public function test_db_ssl_ca_reaches_the_driver(): void
     {
         $direct = SqlConnectionFactory::fromConfig(new Config([
             'DB_CONNECTION' => 'pgsql', 'DB_DRIVER' => 'native', 'DB_PASSWORD' => 's',
@@ -562,17 +499,6 @@ final class SqlConnectionFactoryTest extends TestCase
         ]));
 
         $options = self::property($direct, 'options');
-        self::assertInstanceOf(ConnectionOptions::class, $options);
-        self::assertSame('/certs/ca.pem', $options->sslCa);
-
-        // The legacy DB_OPTIONS spelling lands on the same canonical
-        // field instead of passing through as a raw libpq key.
-        $legacy = SqlConnectionFactory::fromConfig(new Config([
-            'DB_CONNECTION' => 'pgsql', 'DB_DRIVER' => 'native', 'DB_PASSWORD' => 's',
-            'DB_OPTIONS' => 'sslmode=verify-full sslrootcert=/certs/ca.pem',
-        ]));
-
-        $options = self::property($legacy, 'options');
         self::assertInstanceOf(ConnectionOptions::class, $options);
         self::assertSame('/certs/ca.pem', $options->sslCa);
         self::assertSame('', $options->extraConnectionString);

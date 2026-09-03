@@ -70,18 +70,47 @@ final class KernelIntegrationTest extends TestCase
 
         DanglingTransactionHolder::$link = null;
 
-        $request = new ServerRequest('POST', '/mcp', ['Content-Type' => 'application/json']);
+        $request = new ServerRequest(
+            'POST',
+            '/mcp',
+            [
+                'Content-Type' => 'application/json',
+                'MCP-Protocol-Version' => '2026-07-28',
+                'Mcp-Method' => 'tools/call',
+                'Mcp-Name' => 'begin_transaction',
+            ],
+        );
         $request->getBody()->write((string) \json_encode([
             'jsonrpc' => '2.0',
             'id' => 1,
             'method' => 'tools/call',
-            'params' => ['name' => 'begin_transaction'],
+            'params' => [
+                'name' => 'begin_transaction',
+                '_meta' => [
+                    'io.modelcontextprotocol/protocolVersion' => '2026-07-28',
+                    'io.modelcontextprotocol/clientCapabilities' => (object) [],
+                ],
+            ],
         ]));
         $request->getBody()->rewind();
 
         $response = $kernel->handle($request);
 
         self::assertSame(200, $response->getStatusCode());
+
+        // A 200 alone doesn't prove the tool actually ran — most, but
+        // not all, preflight/validation rejections map to 400, so the
+        // envelope itself has to be checked too: a genuine result, never
+        // an error, and the tool's own real return value inside it, not
+        // just "some result key is present."
+        $body = \json_decode((string) $response->getBody(), true);
+        self::assertArrayNotHasKey('error', $body);
+        self::assertFalse($body['result']['isError']);
+        self::assertSame(
+            ['started' => true],
+            \json_decode($body['result']['content'][0]['text'], true),
+        );
+
         self::assertNotNull(DanglingTransactionHolder::$link);
         self::assertTrue(DanglingTransactionHolder::$link->transactions[0]->rolledBack);
     }
@@ -103,13 +132,36 @@ final class KernelIntegrationTest extends TestCase
             'jsonrpc' => '2.0',
             'id' => 1,
             'method' => 'tools/call',
-            'params' => ['name' => 'begin_transaction'],
+            'params' => [
+                'name' => 'begin_transaction',
+                '_meta' => [
+                    'io.modelcontextprotocol/protocolVersion' => '2026-07-28',
+                    'io.modelcontextprotocol/clientCapabilities' => (object) [],
+                ],
+            ],
         ]) . "\n");
         \rewind($input);
         $output = \fopen('php://memory', 'r+');
         \assert($output !== false);
 
         (new StdioTransport())->run($server, $input, $output, $app);
+
+        // Decode and assert the actual output line rather than ignoring
+        // it — a pre-dispatch rejection would still leave $output
+        // non-empty (a JSON-RPC error line), so only inspecting it can
+        // tell that apart from a genuine successful dispatch.
+        \rewind($output);
+        $written = (string) \stream_get_contents($output);
+        $lines = \array_values(\array_filter(\explode("\n", $written)));
+        self::assertCount(1, $lines);
+
+        $response = \json_decode($lines[0], true);
+        self::assertArrayNotHasKey('error', $response);
+        self::assertFalse($response['result']['isError']);
+        self::assertSame(
+            ['started' => true],
+            \json_decode($response['result']['content'][0]['text'], true),
+        );
 
         self::assertNotNull(DanglingTransactionHolder::$link);
         self::assertTrue(DanglingTransactionHolder::$link->transactions[0]->rolledBack);

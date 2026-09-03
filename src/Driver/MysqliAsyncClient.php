@@ -620,11 +620,27 @@ final class MysqliAsyncClient implements MysqlLink
         }
 
         if ($result === true) {
+            try {
+                // Kept inside this try, not called directly into the
+                // BufferedSqlResult construction below: a failure here
+                // must reach the Fiber actually awaiting this query via
+                // the same $suspension->throw() path every other
+                // failure on this method already uses, never escape
+                // uncaught from this callback, which would leave that
+                // Fiber suspended forever with nothing left to resume
+                // it.
+                $lastInsertId = MysqlInsertId::normalize($connection->insert_id);
+            } catch (Throwable $e) {
+                $suspension->throw($e);
+
+                return;
+            }
+
             $suspension->resume(new BufferedSqlResult(
                 [],
                 $connection->affected_rows >= 0 ? (int) $connection->affected_rows : null,
                 null,
-                $connection->insert_id !== 0 ? (int) $connection->insert_id : null,
+                $lastInsertId,
             ));
 
             return;
