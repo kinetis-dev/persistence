@@ -128,6 +128,20 @@ final class MysqlInsertIdTest extends TestCase
         }
     }
 
+    /**
+     * Digits followed by trailing garbage ("123abc") — this specifically
+     * exercises the pattern's trailing "$" anchor, which a leading-only
+     * "abc" (no digits at all) can never distinguish: without it,
+     * preg_match() only requires the string to *start* with digits, not
+     * consist entirely of them.
+     */
+    public function test_a_numeric_string_with_trailing_garbage_is_rejected(): void
+    {
+        $this->expectException(UnexpectedInsertIdException::class);
+
+        MysqlInsertId::normalize('123abc');
+    }
+
     /** A negative numeric string should never come from a real UNSIGNED BIGINT id — rejected, not silently coerced or passed through. */
     public function test_a_negative_numeric_string_is_rejected(): void
     {

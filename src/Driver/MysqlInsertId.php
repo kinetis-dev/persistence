@@ -62,7 +62,7 @@ final class MysqlInsertId
             return $raw !== 0 ? $raw : null;
         }
 
-        if (!preg_match('/^[0-9]+$/', $raw)) {
+        if (!preg_match('/^\d+$/', $raw)) {
             throw UnexpectedInsertIdException::forMalformedValue();
         }
 
