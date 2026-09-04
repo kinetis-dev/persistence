@@ -97,6 +97,13 @@ final class MysqliAsyncClient implements MysqlLink
 
     private bool $closed = false;
 
+    /**
+     * The pre-flight every execute() passes before this client touches
+     * its pool. A transaction pinning one of these connections keeps
+     * its own ({@see AbstractTransaction}).
+     */
+    private readonly SqlParamPreflight $preflight;
+
     public function __construct(
         private readonly string $host,
         private readonly string $user,
@@ -110,6 +117,7 @@ final class MysqliAsyncClient implements MysqlLink
         // connection-string text has no mysqli equivalent.
         $this->options->rejectUnsupported('native mysqli', ['applicationName', 'extraConnectionString']);
         $this->options->validateMysqlSsl('native mysqli');
+        $this->preflight = new SqlParamPreflight(SqlDialect::Mysql);
         $this->waiters = new SplQueue();
     }
 
@@ -159,9 +167,14 @@ final class MysqliAsyncClient implements MysqlLink
     #[\Override]
     public function execute(string $sql, array $params = []): SqlResult
     {
+        // Ahead of runPooled(), which opens the span and takes a
+        // connection — {@see SqlParamPreflight} for why that ordering is
+        // the contract.
+        $query = $this->preflight->run($sql, $params);
+
         return $this->runPooled(
             $sql,
-            fn (mysqli $connection): SqlResult => $this->queryOn($connection, $this->interpolate($connection, $sql, $params)),
+            fn (mysqli $connection): SqlResult => $this->queryOn($connection, $this->render($connection, $query)),
         );
     }
 
@@ -306,13 +319,12 @@ final class MysqliAsyncClient implements MysqlLink
     }
 
     /**
-     * @param array<int|string, mixed> $params
-     *
-     * @internal Also used by {@see MysqliAsyncTransaction}.
+     * @internal Also used by {@see MysqliAsyncTransaction}, whose own
+     *     pre-flight has already settled $query.
      */
-    public function executeOn(mysqli $connection, string $sql, array $params): SqlResult
+    public function executeOn(mysqli $connection, PreflightedQuery $query): SqlResult
     {
-        return $this->queryOn($connection, $this->interpolate($connection, $sql, $params));
+        return $this->queryOn($connection, $this->render($connection, $query));
     }
 
     private function dispatchFailure(mysqli $connection, string $sql, ?mysqli_sql_exception $e): Throwable
@@ -330,11 +342,16 @@ final class MysqliAsyncClient implements MysqlLink
     }
 
     /**
-     * @param array<int|string, mixed> $params
+     * Escapes the pre-flighted values into the query text — mysqli's
+     * async mode has no server-side bind step, so this is where a value
+     * meets the SQL. Escaping runs against the connection's actual
+     * charset, which this client always sets explicitly.
      */
-    private function interpolate(mysqli $connection, string $sql, array $params): string
+    private function render(mysqli $connection, PreflightedQuery $query): string
     {
-        return SqlParamInterpolator::interpolate($sql, \array_values($params), static function (mixed $value) use ($connection): string {
+        // The pre-flight the caller already passed is why these arms are
+        // the whole set and the last one is a string.
+        return SqlParamInterpolator::render($query, static function (null|bool|int|float|string $value) use ($connection): string {
             return match (true) {
                 $value === null => 'NULL',
                 \is_bool($value) => $value ? '1' : '0',
@@ -345,14 +362,10 @@ final class MysqliAsyncClient implements MysqlLink
                 // — two SQL expressions, silently wrong results. PHP's
                 // float-to-string cast is locale-independent and
                 // round-trip exact.
-                \is_float($value) && \is_finite($value) => (string) $value,
-                \is_float($value) => throw new QueryException('Cannot bind a non-finite float (INF/NAN) as a SQL parameter'),
-                \is_string($value) => "'" . $connection->real_escape_string($value) . "'",
-                default => throw new QueryException(
-                    'Unsupported parameter type ' . \get_debug_type($value) . ' — only scalars and null can be bound',
-                ),
+                \is_float($value) => (string) $value,
+                default => "'" . $connection->real_escape_string($value) . "'",
             };
-        }, SqlDialect::Mysql);
+        });
     }
 
     private function acquire(): mysqli

@@ -29,18 +29,15 @@ trait PdoExecutionTrait
     private bool $closed = false;
 
     /**
-     * Prepared statements memoized per SQL string for this connection's
-     * lifetime. Both PDO clients run with native (non-emulated)
-     * prepares, where every prepare() is its own server round trip —
-     * without reuse, execute() pays two round trips per query and a
-     * hot loop issuing the same statement N times costs 2N instead of
-     * N+1. MySQL and Postgres both scope prepared statements to the
-     * connection, which is exactly this cache's lifetime; close()
-     * drops it with the connection.
-     *
-     * @var array<string, PDOStatement>
+     * The pre-flight every execute() passes before this client does
+     * anything at all, and the statements memoized per SQL string for
+     * this connection's lifetime. Both are built on first use rather
+     * than in a constructor, which a trait has none of, and dropped by
+     * close() with the connection.
      */
-    private array $statements = [];
+    private ?SqlParamPreflight $preflight = null;
+
+    private ?PdoStatementCache $statements = null;
 
     /**
      * Opens the connection now instead of on first use. A PDO client is
@@ -89,43 +86,18 @@ trait PdoExecutionTrait
 
     public function execute(string $sql, array $params = []): SqlResult
     {
+        // Ahead of the span, connection() and the statement memo —
+        // {@see SqlParamPreflight} for why that ordering is the contract.
+        $this->preflight ??= new SqlParamPreflight($this->dialect());
+        $query = $this->preflight->run($sql, $params);
+
         $telemetry = Telemetry::global();
         $token = $telemetry->queryDispatched($this instanceof MysqlLink ? 'mysql' : 'postgresql', $sql);
         $telemetry->queryServerStarted($token);
 
         try {
-            $statement = $this->statements[$sql] ?? null;
-
-            if ($statement === null) {
-                // An unbounded cache would let a workload that
-                // interpolates values into its SQL (instead of binding)
-                // grow it without limit; a full reset is crude but keeps
-                // the steady state — a bounded set of parameterized
-                // statements — at exactly one prepare each.
-                if (\count($this->statements) >= 256) {
-                    $this->statements = [];
-                }
-
-                // Runs once per distinct SQL string (amortized by the
-                // prepare cache above, same as prepare() itself) rather
-                // than on every call — see SqlParamInterpolator's own
-                // docblock for why this exists at all.
-                SqlParamInterpolator::assertNoExecutableCommentPlaceholder(
-                    $sql,
-                    $this instanceof MysqlLink ? SqlDialect::Mysql : SqlDialect::Postgres,
-                );
-
-                $prepared = $this->connection()->prepare($sql);
-
-                if ($prepared === false) {
-                    throw new QueryException('Failed to prepare query', $sql);
-                }
-
-                $statement = $this->statements[$sql] = $prepared;
-            }
-
-            PdoParamBinder::bind($statement, $params);
-            $statement->execute();
+            $this->statements ??= new PdoStatementCache();
+            $statement = $this->statements->execute($this->connection(), $query);
         } catch (PDOException $e) {
             $failure = new QueryException($e->getMessage(), $sql, $e);
             $telemetry->queryReaped($token, $failure);
@@ -145,7 +117,8 @@ trait PdoExecutionTrait
     public function close(): void
     {
         $this->closed = true;
-        $this->statements = [];
+        $this->preflight = null;
+        $this->statements = null;
         $this->pdo = null;
     }
 
@@ -164,6 +137,12 @@ trait PdoExecutionTrait
         }
 
         return $this->connection();
+    }
+
+    /** Which lexical rules this client's pre-flight scans SQL under. */
+    private function dialect(): SqlDialect
+    {
+        return $this instanceof MysqlLink ? SqlDialect::Mysql : SqlDialect::Postgres;
     }
 
     /** Opens (or returns) the one lazily-created PDO connection. */

@@ -88,6 +88,39 @@ final class ExecutableCommentTest extends DriverCase
     }
 
     /**
+     * A transaction runs its own statement cache over the client's
+     * handle, and reaches the same rejection through it — the query is
+     * refused inside a transaction exactly as it is outside one, on
+     * either driver.
+     */
+    #[DataProvider('mysqlDrivers')]
+    public function test_a_transaction_rejects_the_same_placeholder(string $driver): void
+    {
+        $db = self::makeClient($driver);
+        $tx = $db->beginTransaction();
+
+        foreach (['/*!' . self::LOW_GATE, '/*M!' . self::HIGH_GATE] as $opener) {
+            try {
+                $tx->execute("SELECT {$opener} ? */ 1 AS n", [1]);
+                self::fail("Expected a QueryException for {$opener} on {$driver}.");
+            } catch (QueryException $e) {
+                self::assertSame(
+                    self::EXECUTABLE_COMMENT_PLACEHOLDER_MESSAGE,
+                    $e->getMessage(),
+                    "{$opener} on {$driver} did not produce the expected rejection inside a transaction.",
+                );
+            }
+        }
+
+        // The transaction is still usable and still its own: the
+        // rejection happens before the server is reached at all.
+        self::assertSame(1, (int) ($tx->execute('SELECT ? AS one', [1])->fetchRow()['one'] ?? 0));
+
+        $tx->rollback();
+        $db->close();
+    }
+
+    /**
      * The rejection is scoped precisely to a genuine placeholder — an
      * executable comment with none inside it (an optimizer hint, for
      * instance) still runs correctly on both drivers, exactly as it

@@ -61,6 +61,13 @@ final class PgsqlAsyncClient implements PostgresLink
 
     private bool $closed = false;
 
+    /**
+     * The pre-flight every execute() passes before this client touches
+     * its pool. A transaction pinning one of these connections keeps
+     * its own ({@see AbstractTransaction}).
+     */
+    private readonly SqlParamPreflight $preflight;
+
     public function __construct(
         private readonly string $host,
         private readonly string $user,
@@ -72,6 +79,7 @@ final class PgsqlAsyncClient implements PostgresLink
         $this->options = $options ?? new ConnectionOptions();
         // Collation and protocol compression are MySQL concepts.
         $this->options->rejectUnsupported('native pgsql', ['collation', 'compression']);
+        $this->preflight = new SqlParamPreflight(SqlDialect::Postgres);
         $this->waiters = new SplQueue();
     }
 
@@ -109,9 +117,14 @@ final class PgsqlAsyncClient implements PostgresLink
     #[\Override]
     public function execute(string $sql, array $params = []): SqlResult
     {
+        // Ahead of runPooled(), which opens the span and takes a
+        // connection — {@see SqlParamPreflight} for why that ordering is
+        // the contract.
+        $query = $this->preflight->run($sql, $params);
+
         return $this->runPooled(
             $sql,
-            fn (PgsqlAsyncConnection $connection): SqlResult => $this->executeOn($connection, $sql, $params),
+            fn (PgsqlAsyncConnection $connection): SqlResult => $this->executeOn($connection, $query),
         );
     }
 
@@ -221,32 +234,30 @@ final class PgsqlAsyncClient implements PostgresLink
     }
 
     /**
-     * @param array<int|string, mixed> $params
-     *
-     * @internal Also used by {@see PgsqlAsyncTransaction}.
+     * @internal Also used by {@see PgsqlAsyncTransaction}, whose own
+     *     pre-flight has already settled $query.
      */
-    public function executeOn(PgsqlAsyncConnection $connection, string $sql, array $params): SqlResult
+    public function executeOn(PgsqlAsyncConnection $connection, PreflightedQuery $query): SqlResult
     {
         $this->assertOpen();
 
-        $rewritten = SqlParamInterpolator::interpolate(
-            $sql,
-            \array_values($params),
-            static fn (mixed $value, int $index): string => '$' . ($index + 1),
-            SqlDialect::Postgres,
+        $rewritten = SqlParamInterpolator::render(
+            $query,
+            static fn (null|bool|int|float|string $value, int $index): string => '$' . ($index + 1),
         );
 
-        $encoded = \array_map(static fn (mixed $value): ?string => match (true) {
+        // pg_send_query_params() carries the values alongside the query
+        // rather than inside the rewritten text, so this is where they
+        // are encoded — every one of them already held to the value
+        // contract, which is why these arms are the whole set.
+        $encoded = \array_map(static fn (null|bool|int|float|string $value): ?string => match (true) {
             $value === null => null,
             \is_bool($value) => $value ? 't' : 'f',
-            \is_int($value), \is_float($value), \is_string($value) => (string) $value,
-            default => throw new QueryException(
-                'Unsupported parameter type ' . \get_debug_type($value) . ' — only scalars and null can be bound',
-            ),
-        }, \array_values($params));
+            default => (string) $value,
+        }, $query->values);
 
         if (!@\pg_send_query_params($connection->handle, $rewritten, $encoded)) {
-            throw $this->dispatchFailure($connection, $sql);
+            throw $this->dispatchFailure($connection, $query->sql);
         }
 
         return $this->awaitResult($connection);

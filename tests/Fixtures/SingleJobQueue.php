@@ -67,12 +67,4 @@ final class SingleJobQueue implements QueueInterface
     {
         return $this->pending === null ? 0 : 1;
     }
-
-    public function clear(string $queue = 'default'): int
-    {
-        $size = $this->size($queue);
-        $this->pending = null;
-
-        return $size;
-    }
 }

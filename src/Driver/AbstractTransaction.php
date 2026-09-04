@@ -18,6 +18,13 @@ use Kinetis\Persistence\Exception\TransactionException;
  * how SQL actually reaches their pinned connection ({@see run()}) and
  * what finishing does with it ({@see finish()}).
  *
+ * The parameter pre-flight is shared here too, for the same reason the
+ * state check is: a subclass reaching its pinned connection before the
+ * argument list has been settled would decide a caller's mistake
+ * differently on each driver. {@see execute()} runs it and hands
+ * {@see runWithParams()} the outcome, so no subclass is in a position
+ * to dispatch first.
+ *
  * @internal
  */
 abstract class AbstractTransaction implements SqlTransaction
@@ -25,6 +32,9 @@ abstract class AbstractTransaction implements SqlTransaction
     private bool $active = true;
 
     private mixed $telemetryToken = null;
+
+    /** Built on first use: a transaction with no bound parameters needs none. */
+    private ?SqlParamPreflight $preflight = null;
 
     /**
      * Marks the transaction's begin moment for instrumentation — called
@@ -51,7 +61,13 @@ abstract class AbstractTransaction implements SqlTransaction
     {
         $this->assertActive();
 
-        return $this->runWithParams($sql, $params);
+        // Ahead of every subclass's dispatch, so a refused argument
+        // list sends no statement down the pinned connection.
+        $this->preflight ??= new SqlParamPreflight(
+            $this instanceof MysqlTransaction ? SqlDialect::Mysql : SqlDialect::Postgres,
+        );
+
+        return $this->runWithParams($this->preflight->run($sql, $params));
     }
 
     #[\Override]
@@ -110,11 +126,10 @@ abstract class AbstractTransaction implements SqlTransaction
     abstract protected function run(string $sql): SqlResult;
 
     /**
-     * Executes SQL with "?" placeholders on the pinned connection.
-     *
-     * @param array<int|string, mixed> $params
+     * Executes a query the pre-flight has already settled on the pinned
+     * connection.
      */
-    abstract protected function runWithParams(string $sql, array $params): SqlResult;
+    abstract protected function runWithParams(PreflightedQuery $query): SqlResult;
 
     /**
      * Completes the transaction on the pinned connection — COMMIT or
