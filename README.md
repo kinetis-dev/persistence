@@ -22,9 +22,11 @@ Part of [Kinetis](https://kinetis.dev/), a non-blocking PHP framework for
 API-first applications, developed in the
 [kinetis-dev/kinetis](https://github.com/kinetis-dev/kinetis) monorepo.
 
-MySQL and Postgres via `amphp/mysql`/`amphp/postgres`, both sharing the
-`Amp\Sql\SqlLink`/`SqlTransaction` abstraction — this package doesn't
-need to know which one it's talking to.
+MySQL and Postgres through runtime-matched drivers — native
+`ext-mysqli`/`ext-pgsql` async clients under a persistent worker, PDO
+under boot-and-die — all presenting this package's own
+`Contract\SqlLink`/`Contract\SqlTransaction` abstraction, so nothing
+above the driver needs to know which one it's talking to.
 
 ```php
 use Kinetis\Persistence\SqlConnectionFactory;

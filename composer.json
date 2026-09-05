@@ -10,13 +10,13 @@
     ],
     "require": {
         "php": "^8.4",
-        "kinetis/framework": "^1.2.6",
+        "kinetis/framework": "^1.3.1",
         "revolt/event-loop": "^1.0.9"
     },
     "require-dev": {
         "infection/infection": "^0.35.0",
-        "kinetis/mcp": "^1.2.4",
-        "kinetis/queue": "^1.1.3",
+        "kinetis/mcp": "^1.3.0",
+        "kinetis/queue": "^1.2.0",
         "nyholm/psr7": "^1.8.2",
         "phpstan/phpstan": "^2.2.8",
         "phpunit/phpunit": "^12.5.33",

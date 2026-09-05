@@ -35,9 +35,9 @@ final class MysqliAsyncTransaction extends AbstractTransaction implements MysqlT
     }
 
     #[\Override]
-    protected function runWithParams(string $sql, array $params): SqlResult
+    protected function runWithParams(PreflightedQuery $query): SqlResult
     {
-        return $this->client->executeOn($this->connection, $sql, $params);
+        return $this->client->executeOn($this->connection, $query);
     }
 
     #[\Override]
