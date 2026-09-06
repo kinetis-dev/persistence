@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace Kinetis\Persistence;
 
+use Kinetis\Logging\SafeLogger;
 use Kinetis\Persistence\Contract\SqlLink;
 use Kinetis\Persistence\Contract\SqlTransaction;
-use Kinetis\Persistence\Exception\TransactionException;
 use Psr\Log\LoggerInterface;
 use Throwable;
 
@@ -55,19 +55,12 @@ final class TransactionGuard
      * across multiple calls that never reaches either commit() or
      * rollback() before the request ends.
      *
-     * A transaction this method closes — by commit, or by attempting a
-     * rollback on the way out — is untracked immediately, always, whether
-     * or not that closing attempt actually succeeded; tracking only ever
-     * needs to represent genuinely outstanding work, and this method only
-     * ever makes one cleanup attempt of its own. Leaving a failed attempt
-     * tracked would defer a second one to rollbackDangling() at scope
-     * disposal — a `finally` block whose own throw would silently replace
-     * whatever exception is already propagating, exactly the
-     * failure-erasing bug this method exists to avoid one level up
-     * (`$e`, the failure that triggered cleanup in the first place, is
-     * always what's thrown here — a rollback failure while handling it is
-     * logged, never thrown in its place, and never left for a later,
-     * higher-level dispose hook to rediscover and re-throw instead).
+     * The callback's own failure is what propagates. A rollback that
+     * fails while handling it is logged, never thrown in its place, and
+     * the transaction is untracked either way — leaving it tracked would
+     * defer a second attempt to rollbackDangling() at scope disposal,
+     * where a throw would replace the exception already propagating from
+     * here.
      *
      * @template T
      * @param callable(SqlTransaction): T $callback
@@ -85,15 +78,12 @@ final class TransactionGuard
             return $result;
         } catch (Throwable $e) {
             try {
-                if ($transaction->isActive()) {
-                    $transaction->rollback();
-                }
+                // A no-op on a transaction that already ended.
+                $transaction->rollback();
             } catch (Throwable $cleanupFailure) {
-                $this->logSafely(
-                    'error',
-                    'Failed to roll back a transaction while handling a prior failure.',
-                    ['exception' => $cleanupFailure],
-                );
+                $this->log('error', 'Failed to roll back a transaction while handling a prior failure.', [
+                    'exception' => $cleanupFailure,
+                ]);
             } finally {
                 $this->untrack($transaction);
             }
@@ -103,42 +93,29 @@ final class TransactionGuard
     }
 
     /**
-     * Rolls back every transaction this guard started that's still
-     * active when the request ends — best-effort across the complete
-     * tracked set, not fail-fast: one transaction's `isActive()` or
-     * `rollback()` throwing never prevents the rest from being attempted,
-     * since on a persistent worker a cleanup fault on one connection must
-     * not leak transactions/locks on every other tracked one.
+     * Closes every transaction this guard started that is still open when
+     * the request ends — best-effort across the complete tracked set, not
+     * fail-fast: on a persistent worker, a cleanup fault on one connection
+     * must not leak transactions and locks on every other tracked one.
      *
-     * Tracking is cleared before any transaction is touched, not after —
-     * so a transaction this call already attempted (successfully or not)
-     * is never retried by a later call, matching a plain, single-attempt
-     * best-effort contract rather than an open-ended retry loop.
+     * close() rather than rollback(), because disposal runs in the
+     * request's own context while a leaked transaction's owning Fiber may
+     * be parked: a foreign Fiber ends the transaction and discards its
+     * connection instead of putting a concurrent ROLLBACK on it
+     * ({@see \Kinetis\Persistence\Driver\AbstractTransaction::close()}).
      *
-     * The warning for a transaction actually closed is logged only once
-     * `rollback()` has genuinely succeeded, never before — reporting
-     * success ahead of the call would misreport a failed rollback as one
-     * that worked. The logging call itself sits outside the try/catch
-     * that classifies success vs. failure: a logger that throws while
-     * reporting a genuine success must never be misclassified as a
-     * rollback failure, and a logger that throws while reporting a
-     * genuine failure must never prevent a later tracked transaction from
-     * being attempted — see logSafely()'s own docblock. Each rollback
-     * failure is logged individually (so nothing is lost even when
-     * several fail at once), and if any failed, a single
-     * TransactionException is thrown after every transaction has been
-     * attempted, carrying the first failure as its cause — safe to let
-     * propagate: RequestScope::dispose() already runs every dispose
-     * callback to completion regardless of one throwing, and rethrows
-     * only once all of them (and the scope wipe) have finished.
+     * Tracking is cleared before any transaction is touched, so a
+     * transaction this call already attempted is never retried by a later
+     * one. Every tracked transaction is attempted, and the first failure
+     * is rethrown once they all have been — safe to let propagate, since
+     * RequestScope::dispose() runs every dispose callback to completion
+     * regardless of one throwing.
      */
     public function rollbackDangling(): void
     {
         $pending = $this->open;
         $this->open = [];
-
-        /** @var list<Throwable> $failures */
-        $failures = [];
+        $failure = null;
 
         foreach ($pending as $transaction) {
             try {
@@ -146,38 +123,27 @@ final class TransactionGuard
                     continue;
                 }
 
-                $transaction->rollback();
+                $transaction->close();
             } catch (Throwable $e) {
-                $this->logSafely(
-                    'error',
-                    'Failed to roll back a transaction that was still open when the request ended.',
-                    ['exception' => $e],
-                );
-                $failures[] = $e;
+                $failure ??= $e;
+                $this->log('error', 'Failed to close a transaction that was still open when the request ended.', [
+                    'exception' => $e,
+                ]);
 
                 continue;
             }
 
-            $this->logSafely(
-                'warning',
-                'Rolled back a transaction that was still open when the request ended.',
-            );
+            $this->log('warning', 'Closed a transaction that was still open when the request ended.');
         }
 
-        if ($failures !== []) {
-            throw new TransactionException(
-                sprintf('Failed to roll back %d dangling transaction(s) — see the logged errors for detail.', count($failures)),
-                0,
-                $failures[0],
-            );
+        if ($failure !== null) {
+            throw $failure;
         }
     }
 
     /**
-     * Removes a transaction this guard is no longer responsible for —
-     * closed by transaction() itself, or already rolled back by
-     * rollbackDangling(). Identity comparison, not value comparison:
-     * SqlTransaction carries no natural key of its own.
+     * Removes a transaction this guard is no longer responsible for.
+     * Identity comparison: SqlTransaction carries no natural key.
      */
     private function untrack(SqlTransaction $transaction): void
     {
@@ -188,29 +154,18 @@ final class TransactionGuard
     }
 
     /**
-     * This class's actual safety-net contract — every tracked transaction
-     * gets an independent cleanup attempt, and a failure that triggered
-     * cleanup is never silently replaced by a secondary one — must hold
-     * regardless of whether the configured logger itself is healthy.
-     * `Psr\Log\LoggerInterface` gives no no-throw guarantee, and a
-     * failing log handler (a broken remote sink, a full disk) is a real
-     * production scenario, not a theoretical one. Any exception the
-     * logger itself throws is discarded here rather than allowed to
-     * interrupt cleanup, misclassify an already-succeeded rollback as
-     * failed, or replace whatever failure is already being reported.
+     * Cleanup logging is diagnostic, and `Psr\Log\LoggerInterface`
+     * gives no no-throw guarantee: an exception from the logger must
+     * never be mistaken for a cleanup failure, stop a later transaction
+     * from being attempted, or replace an exception already
+     * propagating. {@see SafeLogger} is the framework's containment for
+     * exactly that boundary.
      *
      * @param 'warning'|'error' $level
      * @param array<string, mixed> $context
      */
-    private function logSafely(string $level, string $message, array $context = []): void
+    private function log(string $level, string $message, array $context = []): void
     {
-        try {
-            match ($level) {
-                'warning' => $this->logger->warning($message, $context),
-                'error' => $this->logger->error($message, $context),
-            };
-        } catch (Throwable) {
-            // Discarded deliberately — see this method's own docblock.
-        }
+        SafeLogger::log($this->logger, $level, $message, $context);
     }
 }

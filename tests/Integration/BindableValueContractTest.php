@@ -7,7 +7,6 @@ namespace Kinetis\Persistence\Tests\Integration;
 use Kinetis\Persistence\Contract\SqlLink;
 use Kinetis\Persistence\Contract\SqlTransaction;
 use Kinetis\Persistence\Exception\QueryException;
-use Kinetis\Persistence\Tests\Fixtures\StringableParameter;
 use PHPUnit\Framework\Attributes\DataProvider;
 use stdClass;
 
@@ -100,9 +99,7 @@ final class BindableValueContractTest extends DriverCase
 
     /**
      * Every value the shared contract refuses, with the exact
-     * diagnostic it refuses it with — the same table
-     * PdoStatementPreflightTest holds the doubles to, asserted here
-     * against real servers.
+     * diagnostic it refuses it with.
      *
      * @param resource $stream
      * @return iterable<string, array{mixed, string}>
@@ -115,7 +112,6 @@ final class BindableValueContractTest extends DriverCase
 
         yield 'array' => [[1, 2], $unsupported('array')];
         yield 'object' => [new stdClass(), $unsupported('stdClass')];
-        yield 'stringable object' => [new StringableParameter(), $unsupported(StringableParameter::class)];
         yield 'closure' => [static fn (): int => 1, $unsupported('Closure')];
         yield 'resource' => [$stream, $unsupported('resource (stream)')];
         yield 'INF' => [\INF, $nonFinite];

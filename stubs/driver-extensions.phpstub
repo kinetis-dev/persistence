@@ -7,12 +7,25 @@
  * container. Only what src/ actually references; values mirror the
  * extension's own definitions. The equivalent ext-pdo_mysql gap
  * (Pdo\Mysql's own ATTR_* constants) lives in the sibling
- * pdo-mysql.phpstub instead, since it's a genuinely new class rather
- * than extra constants on one already declared here.
+ * pdo-mysql.phpstub instead, since it declares a class rather than
+ * constants on one already declared here.
  */
 
 const PGSQL_ASSOC = 1;
 const PGSQL_CONNECT_FORCE_NEW = 2;
+const PGSQL_CONNECT_ASYNC = 4;
 const PGSQL_CONNECTION_OK = 0;
+const PGSQL_POLLING_FAILED = 0;
+const PGSQL_POLLING_READING = 1;
+const PGSQL_POLLING_OK = 3;
+const PGSQL_COPY_OUT = 3;
+const PGSQL_COPY_IN = 4;
 const PGSQL_BAD_RESPONSE = 5;
 const PGSQL_FATAL_ERROR = 7;
+const PGSQL_TRANSACTION_IDLE = 0;
+const PGSQL_TRANSACTION_UNKNOWN = 4;
+
+/** ext-sockets' handle type, which disposal shuts a connection's transport down through. */
+final class Socket
+{
+}

@@ -49,11 +49,22 @@ use Throwable;
  * fan-out width, and callers beyond it wait for a connection like any
  * pool.
  *
+ * Opening a connection blocks the worker thread. mysqli has no async
+ * connect primitive at all — MYSQLI_ASYNC applies to queries, and
+ * real_connect() runs the whole handshake before it returns — so a
+ * connection opened under load stalls every other Fiber on the thread
+ * for the length of a TCP connect, a TLS handshake and an auth
+ * exchange. Warm the whole pool at boot ({@see warmUp()}, which every
+ * deployment on this driver should do anyway for the descriptor reason
+ * below) and set `DB_CONNECT_TIMEOUT`, so an unreachable server bounds
+ * the stall instead of leaving it to the platform.
+ *
  * A dispatch-phase failure whose error indicates the pooled connection
  * itself died is retried once on a fresh connection — safe, because the
  * statement never reached the server. Reap-phase failures are never
  * retried, so a connection that dies while pooled costs the caller one
- * QueryException before the retry path takes over; see
+ * error first: a ConnectionException when the client reports the session
+ * gone, a QueryException when the server answered. See
  * {@see StaleConnectionException} for the full sequence.
  *
  * execute() realizes parameter binding as escaped client-side
@@ -71,6 +82,10 @@ final class MysqliAsyncClient implements MysqlLink
     /** Client-side errno values meaning "the connection is gone" (CR_CONNECTION_ERROR, CR_SERVER_GONE_ERROR, CR_SERVER_LOST). */
     private const array GONE_ERRNOS = [2002, 2006, 2013];
 
+    private const string ONE_RESULT_MESSAGE = 'One statement per call: the query produced more than one result set';
+
+    private const string ABORTED_MESSAGE = 'The MySQL connection was closed with a statement in flight; whether the server ran it is unknown';
+
     private readonly ConnectionOptions $options;
 
     /** @var array<int, mysqli> Every open connection, keyed by spl_object_id. */
@@ -79,14 +94,22 @@ final class MysqliAsyncClient implements MysqlLink
     /** @var list<mysqli> */
     private array $idle = [];
 
-    /** @var array<int, array{EventLoop\Suspension<SqlResult>, mysqli}> In-flight queries, keyed by spl_object_id of the connection. */
+    /**
+     * In-flight queries, keyed by spl_object_id of the connection: the
+     * Suspension waiting on the result, the connection itself for
+     * mysqli_poll(), and the SQL — kept because reaping is where the
+     * server's answer arrives, and a failure there has to carry the
+     * statement it belongs to.
+     *
+     * @var array<int, array{EventLoop\Suspension<SqlResult>, mysqli, string}>
+     */
     private array $pending = [];
 
     /**
      * @var array<int, true> Connections whose in-flight query failed at
      *     the connection level, keyed by spl_object_id. The owning
      *     Fiber's release() call consults this so a dead connection is
-     *     discarded instead of returning to the idle pool.
+     *     aborted instead of returning to the idle pool.
      */
     private array $broken = [];
 
@@ -104,6 +127,9 @@ final class MysqliAsyncClient implements MysqlLink
      */
     private readonly SqlParamPreflight $preflight;
 
+    /** Which Fibers hold a transaction on this client — see {@see FiberTransactions}. */
+    private readonly FiberTransactions $transactions;
+
     public function __construct(
         private readonly string $host,
         private readonly string $user,
@@ -113,11 +139,11 @@ final class MysqliAsyncClient implements MysqlLink
         ?ConnectionOptions $options = null,
     ) {
         $this->options = $options ?? new ConnectionOptions();
-        // applicationName is a Postgres concept; free-form
-        // connection-string text has no mysqli equivalent.
-        $this->options->rejectUnsupported('native mysqli', ['applicationName', 'extraConnectionString']);
+        // applicationName is a Postgres concept.
+        $this->options->rejectUnsupported('native mysqli', ['applicationName']);
         $this->options->validateMysqlSsl('native mysqli');
         $this->preflight = new SqlParamPreflight(SqlDialect::Mysql);
+        $this->transactions = new FiberTransactions();
         $this->waiters = new SplQueue();
     }
 
@@ -161,12 +187,16 @@ final class MysqliAsyncClient implements MysqlLink
     #[\Override]
     public function query(string $sql): SqlResult
     {
+        $this->transactions->assertNone();
+
         return $this->runPooled($sql, fn (mysqli $connection): SqlResult => $this->queryOn($connection, $sql));
     }
 
     #[\Override]
     public function execute(string $sql, array $params = []): SqlResult
     {
+        $this->transactions->assertNone();
+
         // Ahead of runPooled(), which opens the span and takes a
         // connection — {@see SqlParamPreflight} for why that ordering is
         // the contract.
@@ -200,8 +230,11 @@ final class MysqliAsyncClient implements MysqlLink
                 throw $e;
             }
 
-            return new MysqliAsyncTransaction($this, $connection, function (mysqli $connection): void {
-                $this->release($connection);
+            $owner = $this->transactions->open();
+
+            return new MysqliAsyncTransaction($this, $connection, function (mysqli $connection, bool $discard) use ($owner): void {
+                $this->transactions->close($owner);
+                $this->release($connection, $discard);
             });
         }
     }
@@ -215,29 +248,18 @@ final class MysqliAsyncClient implements MysqlLink
 
         $this->closed = true;
 
+        foreach ($this->connections as $connection) {
+            $this->abort($connection);
+        }
+
         if ($this->pollTimerId !== null) {
             EventLoop::cancel($this->pollTimerId);
             $this->pollTimerId = null;
         }
 
-        foreach ($this->pending as [$suspension]) {
-            $suspension->throw(new ConnectionException('The client was closed with a query in flight'));
-        }
-        $this->pending = [];
-
         while (!$this->waiters->isEmpty()) {
             $this->waiters->dequeue()->resume(null);
         }
-
-        foreach ($this->connections as $connection) {
-            try {
-                $connection->close();
-            } catch (mysqli_sql_exception) {
-                // Already gone; closing is best-effort.
-            }
-        }
-        $this->connections = [];
-        $this->idle = [];
     }
 
     #[\Override]
@@ -311,7 +333,7 @@ final class MysqliAsyncClient implements MysqlLink
         }
 
         $suspension = EventLoop::getSuspension();
-        $this->pending[\spl_object_id($connection)] = [$suspension, $connection];
+        $this->pending[\spl_object_id($connection)] = [$suspension, $connection, $sql];
         $this->enablePolling();
 
         /** @var SqlResult */
@@ -338,7 +360,31 @@ final class MysqliAsyncClient implements MysqlLink
             return new StaleConnectionException("MySQL connection lost during dispatch: {$message}", 0, $e);
         }
 
-        return new QueryException($message, $sql, $e);
+        return new QueryException($message, $sql, $e, $errno);
+    }
+
+    /**
+     * Classifies a reap-phase failure. A gone errno means the session
+     * died with the statement already on its way: the connection is
+     * marked broken so {@see release()} discards it instead of pooling a
+     * dead handle, and the caller gets a ConnectionException — which is
+     * what ends and discards a transaction pinned to this connection,
+     * where a QueryException would leave it believing it is still open.
+     * Never a {@see StaleConnectionException}: that one means "retry",
+     * and a statement the server may already have run must not be sent
+     * twice. Anything the server itself answered stays a QueryException.
+     */
+    private function reapFailure(mysqli $connection, string $message, string $sql, ?mysqli_sql_exception $e): Throwable
+    {
+        if (\in_array($connection->errno, self::GONE_ERRNOS, true)) {
+            $this->broken[\spl_object_id($connection)] = true;
+
+            // No SQL on a connection failure: the statement is not what
+            // went wrong, and the message travels into logs and traces.
+            return new ConnectionException("MySQL connection lost while reading the result: {$message}", 0, $e);
+        }
+
+        return new QueryException($message, $sql, $e, $connection->errno);
     }
 
     /**
@@ -399,38 +445,73 @@ final class MysqliAsyncClient implements MysqlLink
     }
 
     /** @internal Called back by {@see MysqliAsyncTransaction} when it finishes. */
-    public function release(mysqli $connection, bool $broken = false): void
+    public function release(mysqli $connection, bool $discard = false): void
     {
         $id = \spl_object_id($connection);
+        // Cleared here whatever happens next: spl_object_id is reused
+        // once an object is freed, and a leftover entry would mark some
+        // later connection broken for nothing.
+        $broken = isset($this->broken[$id]);
+        unset($this->broken[$id]);
 
-        if (isset($this->broken[$id])) {
-            unset($this->broken[$id]);
-            $broken = true;
-        }
-
-        if (($broken || $this->closed) && isset($this->connections[$id])) {
-            // Only tear down a connection this pool still tracks:
-            // close() already closed everything it held — including a
-            // connection pinned by an in-flight transaction, whose
-            // finish() releases it afterwards — and mysqli throws on a
-            // second close.
-            unset($this->connections[$id]);
-
-            try {
-                $connection->close();
-            } catch (mysqli_sql_exception) {
-                // Already gone server-side; closing is best-effort.
-            }
-        }
-
-        if (!$this->waiters->isEmpty()) {
-            $this->waiters->dequeue()->resume(($broken || $this->closed) ? null : $connection);
+        if ($discard || $broken || $this->closed) {
+            $this->abort($connection);
 
             return;
         }
 
-        if (!$broken && !$this->closed) {
-            $this->idle[] = $connection;
+        if (!$this->waiters->isEmpty()) {
+            $this->waiters->dequeue()->resume($connection);
+
+            return;
+        }
+
+        $this->idle[] = $connection;
+    }
+
+    /**
+     * Takes one connection out of service for good: the pool forgets it,
+     * the transport is closed, whatever was in flight on it is settled,
+     * and one Fiber waiting for a connection is woken to open a
+     * replacement. The single way out for a connection that must not be
+     * reused — discarded by a transaction closing from another Fiber,
+     * broken under a statement, or held by a client being closed.
+     *
+     * A connection the pool has already forgotten passes through
+     * untouched, so an owner resuming into its own terminal transition
+     * settles nothing twice.
+     */
+    private function abort(mysqli $connection): void
+    {
+        $id = \spl_object_id($connection);
+
+        if (!isset($this->connections[$id])) {
+            return;
+        }
+
+        unset($this->connections[$id], $this->broken[$id]);
+        $this->idle = \array_values(\array_filter($this->idle, static fn (mysqli $pooled): bool => $pooled !== $connection));
+
+        $pending = $this->pending[$id] ?? null;
+        unset($this->pending[$id]);
+        $this->disablePollTimerIfIdle();
+
+        try {
+            $connection->close();
+        } catch (mysqli_sql_exception) {
+            // Already gone server-side; closing is best-effort.
+        }
+
+        if ($pending !== null) {
+            // Settled after the handle is gone, so the Fiber resuming
+            // here can never reach one this method is about to close.
+            // The statement may well have run, so what the server did
+            // with it is reported unknown rather than failed.
+            $pending[0]->throw(new ConnectionException(self::ABORTED_MESSAGE));
+        }
+
+        if (!$this->waiters->isEmpty()) {
+            $this->waiters->dequeue()->resume(null);
         }
     }
 
@@ -615,54 +696,53 @@ final class MysqliAsyncClient implements MysqlLink
         }
 
         unset($this->pending[$id]);
-        [$suspension] = $entry;
+        [$suspension, , $sql] = $entry;
 
         try {
             /** @var \mysqli_result|bool $result reap_async_query() returns true for queries without result sets; some stubs type only mysqli_result|false. */
             $result = $connection->reap_async_query();
         } catch (mysqli_sql_exception $e) {
-            $suspension->throw(new QueryException($e->getMessage(), '', $e));
+            $suspension->throw($this->reapFailure($connection, $e->getMessage(), $sql, $e));
 
             return;
         }
 
         if ($result === false) {
-            $suspension->throw(new QueryException($connection->error !== '' ? $connection->error : 'Query failed'));
-
-            return;
-        }
-
-        if ($result === true) {
-            try {
-                // Kept inside this try, not called directly into the
-                // BufferedSqlResult construction below: a failure here
-                // must reach the Fiber actually awaiting this query via
-                // the same $suspension->throw() path every other
-                // failure on this method already uses, never escape
-                // uncaught from this callback, which would leave that
-                // Fiber suspended forever with nothing left to resume
-                // it.
-                $lastInsertId = MysqlInsertId::normalize($connection->insert_id);
-            } catch (Throwable $e) {
-                $suspension->throw($e);
-
-                return;
-            }
-
-            $suspension->resume(new BufferedSqlResult(
-                [],
-                $connection->affected_rows >= 0 ? (int) $connection->affected_rows : null,
+            $suspension->throw($this->reapFailure(
+                $connection,
+                $connection->error !== '' ? $connection->error : 'Query failed',
+                $sql,
                 null,
-                $lastInsertId,
             ));
 
             return;
         }
 
-        /** @var list<array<string, mixed>> $rows */
-        $rows = $result->fetch_all(\MYSQLI_ASSOC);
-        $buffered = new BufferedSqlResult($rows, (int) $result->num_rows, $result->field_count);
-        $result->free();
+        if ($result === true) {
+            $buffered = new BufferedSqlResult(
+                [],
+                $connection->affected_rows >= 0 ? (int) $connection->affected_rows : null,
+                null,
+                MysqlInsertId::normalize($connection->insert_id),
+            );
+        } else {
+            /** @var list<array<string, mixed>> $rows */
+            $rows = $result->fetch_all(\MYSQLI_ASSOC);
+            $buffered = new BufferedSqlResult($rows, (int) $result->num_rows, $result->field_count);
+            $result->free();
+        }
+
+        if ($connection->more_results()) {
+            // A local status-flag read, not a round trip. Draining the
+            // rest would mean next_result(), which blocks the whole event
+            // loop, so the connection is discarded instead: an unread
+            // result set left on it fails every later borrower with
+            // "commands out of sync", and nothing ever clears that.
+            $this->broken[$id] = true;
+            $suspension->throw(new QueryException(self::ONE_RESULT_MESSAGE, $sql));
+
+            return;
+        }
 
         $suspension->resume($buffered);
     }

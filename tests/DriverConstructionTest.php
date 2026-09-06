@@ -73,9 +73,7 @@ final class DriverConstructionTest extends TestCase
         // The documented support matrix, inverted: each driver x each
         // option it must reject.
         yield 'mysqli rejects applicationName' => [MysqliAsyncClient::class, new ConnectionOptions(applicationName: 'x')];
-        yield 'mysqli rejects extraConnectionString' => [MysqliAsyncClient::class, new ConnectionOptions(extraConnectionString: 'a=b')];
         yield 'pdo-mysql rejects applicationName' => [PdoMysqlClient::class, new ConnectionOptions(applicationName: 'x')];
-        yield 'pdo-mysql rejects extraConnectionString' => [PdoMysqlClient::class, new ConnectionOptions(extraConnectionString: 'a=b')];
         yield 'pgsql rejects collation' => [PgsqlAsyncClient::class, new ConnectionOptions(collation: 'foo_ci')];
         yield 'pgsql rejects compression' => [PgsqlAsyncClient::class, new ConnectionOptions(compression: true)];
         yield 'pdo-pgsql rejects collation' => [PdoPgsqlClient::class, new ConnectionOptions(collation: 'foo_ci')];
@@ -121,13 +119,13 @@ final class DriverConstructionTest extends TestCase
             PgsqlAsyncClient::class,
             new ConnectionOptions(sslMode: 'verify-full', sslCa: '/certs/ca.pem'),
         ];
-        yield 'pgsql accepts charset/ssl/timeout/appname/extra' => [
+        yield 'pgsql accepts charset/ssl/timeout/appname' => [
             PgsqlAsyncClient::class,
-            new ConnectionOptions(charset: 'UTF8', sslMode: 'require', connectTimeout: 3, applicationName: 'x', extraConnectionString: 'a=b'),
+            new ConnectionOptions(charset: 'UTF8', sslMode: 'require', connectTimeout: 3, applicationName: 'x'),
         ];
-        yield 'pdo-pgsql accepts charset/ssl/timeout/appname/extra' => [
+        yield 'pdo-pgsql accepts charset/ssl/timeout/appname' => [
             PdoPgsqlClient::class,
-            new ConnectionOptions(charset: 'UTF8', sslMode: 'require', connectTimeout: 3, applicationName: 'x', extraConnectionString: 'a=b'),
+            new ConnectionOptions(charset: 'UTF8', sslMode: 'require', connectTimeout: 3, applicationName: 'x'),
         ];
     }
 
@@ -258,6 +256,50 @@ final class DriverConstructionTest extends TestCase
         );
 
         self::assertSame($options, self::property(new $driverClass('h', 'u', 'p', 'db', $port, $options), 'options'));
+    }
+
+    /**
+     * PDO's DSN has no quoting grammar: pdo_mysql splits on ";", and
+     * pdo_pgsql translates every ";" to a space before libpq parses what
+     * is left. A value carrying one would become a further connection
+     * parameter, so the PDO clients refuse it at construction.
+     *
+     * @return iterable<string, array{class-string, list<mixed>}>
+     */
+    public static function unrepresentableDsnValues(): iterable
+    {
+        yield 'pdo-mysql host' => [PdoMysqlClient::class, ['h;unix_socket=/tmp/s', 'u', 'p', 'db', 3306, null]];
+        yield 'pdo-mysql database' => [PdoMysqlClient::class, ['h', 'u', 'p', 'db;charset=latin1', 3306, null]];
+        yield 'pdo-mysql NUL in host' => [PdoMysqlClient::class, ["h\0x", 'u', 'p', 'db', 3306, null]];
+        yield 'pdo-pgsql host' => [PdoPgsqlClient::class, ['h;sslmode=disable', 'u', 'p', 'db', 5432, null]];
+        yield 'pdo-pgsql database' => [PdoPgsqlClient::class, ['h', 'u', 'p', 'db;options=-c', 5432, null]];
+        yield 'pdo-pgsql application name' => [
+            PdoPgsqlClient::class,
+            ['h', 'u', 'p', 'db', 5432, new ConnectionOptions(applicationName: 'app;sslmode=disable')],
+        ];
+    }
+
+    /**
+     * @param class-string $driverClass
+     * @param list<mixed> $arguments
+     */
+    #[DataProvider('unrepresentableDsnValues')]
+    public function test_pdo_drivers_reject_dsn_values_they_cannot_represent(string $driverClass, array $arguments): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('must not contain ";" or a NUL byte');
+        new $driverClass(...$arguments);
+    }
+
+    /**
+     * The native clients build a real libpq connection string, where the
+     * same value is quotable — so they take it rather than refusing it.
+     */
+    public function test_the_native_pgsql_client_accepts_a_value_pdo_cannot_represent(): void
+    {
+        $options = new ConnectionOptions(applicationName: 'my app');
+
+        self::assertSame($options, self::property(new PgsqlAsyncClient('h', 'u', 'p', 'db', 5432, $options), 'options'));
     }
 
     /**

@@ -9,10 +9,9 @@ use Kinetis\Persistence\Testing\DatabaseTruncation;
 use PHPUnit\Framework\Attributes\BeforeClass;
 
 /**
- * The same order-independent proof {@see DatabaseTransactionsTest} uses,
- * for the strategy that empties tables instead of rolling back — and one
- * case the transaction trait cannot cover: code that opens its own
- * transaction while the test runs.
+ * Order-independent isolation against a real MySQL: each test sees only
+ * its own rows, including when the code under test opens and commits a
+ * transaction of its own.
  */
 final class DatabaseTruncationTest extends DriverCase
 {
@@ -58,10 +57,9 @@ final class DatabaseTruncationTest extends DriverCase
     }
 
     /**
-     * The case that separates the two strategies: committing a real
-     * transaction from inside a test. Under DatabaseTransactions this
-     * would throw on the nested begin; here it works, and the committed
-     * row is still gone by the next test.
+     * The trait holds no transaction of its own, so code under test can
+     * open and commit one — and the committed row is still gone by the
+     * next test.
      */
     public function test_code_under_test_may_open_its_own_transaction(): void
     {

@@ -28,11 +28,13 @@ use Kinetis\Persistence\Driver\PgsqlAsyncClient;
  *   boot-and-die, per-request handshakes and per-query client CPU
  *   dominate, and an async client's overlap buys nothing a blocking
  *   driver doesn't already deliver — while a persistent worker amortizes
- *   connections across requests and genuinely benefits from native async
+ *   connections across requests and gets the whole of native async
  *   fan-out.
  * - `native`: mysqli's MYSQLI_ASYNC ({@see MysqliAsyncClient}) or
  *   ext-pgsql's pg_send_query ({@see PgsqlAsyncClient}). C-speed wire
- *   protocol, Fiber-suspending, `concurrently()`-compatible.
+ *   protocol, Fiber-suspending, `concurrently()`-compatible. The
+ *   Postgres client also needs ext-sockets and says so at construction
+ *   if it is missing.
  * - `pdo`: one blocking PDO connection ({@see PdoMysqlClient}/
  *   {@see PdoPgsqlClient}).
  *
@@ -47,6 +49,10 @@ use Kinetis\Persistence\Driver\PgsqlAsyncClient;
  * $connection selects a named connection via Config::scopedKey() —
  * 'default' reads the plain DB_* keys; any other name reads DB_{NAME}_*.
  *
+ * $driver overrides `DB_DRIVER` for one call — `kinetis/migrations`
+ * passes 'pdo' for the session-scoped connection its advisory lock
+ * needs.
+ *
  * $poolOptions['maxConnections'] caps the async drivers' fan-out width
  * (the PDO drivers are a single connection, trivially within any cap).
  * $poolOptions['warmConnections'] (or the `DB_WARM_CONNECTIONS` key)
@@ -58,9 +64,15 @@ final class SqlConnectionFactory
 {
     /**
      * @param array<string, mixed> $poolOptions
+     * @param 'auto'|'native'|'pdo'|null $driver Overrides the DB_DRIVER
+     *     key when given.
      */
-    public static function fromConfig(Config $config, string $connection = 'default', array $poolOptions = []): MysqlLink|PostgresLink
-    {
+    public static function fromConfig(
+        Config $config,
+        string $connection = 'default',
+        array $poolOptions = [],
+        ?string $driver = null,
+    ): MysqlLink|PostgresLink {
         $host = $config->string(Config::scopedKey('DB_HOST', $connection), '127.0.0.1');
         $database = $config->string(Config::scopedKey('DB_NAME', $connection), 'app');
         $user = $config->string(Config::scopedKey('DB_USER', $connection), 'app');
@@ -73,7 +85,7 @@ final class SqlConnectionFactory
             throw new InvalidArgumentException("{$dialectKey} must be \"mysql\" or \"pgsql\".");
         }
 
-        $driver = $config->string(Config::scopedKey('DB_DRIVER', $connection), 'auto');
+        $driver ??= $config->string(Config::scopedKey('DB_DRIVER', $connection), 'auto');
 
         if ($driver === 'auto') {
             $driver = self::runningUnderPersistentWorker() ? 'native' : 'pdo';
@@ -81,7 +93,8 @@ final class SqlConnectionFactory
 
         if ($driver !== 'native' && $driver !== 'pdo') {
             throw new InvalidArgumentException(
-                Config::scopedKey('DB_DRIVER', $connection) . " must be \"auto\", \"native\", or \"pdo\", got \"{$driver}\".",
+                'The database driver must be "auto", "native", or "pdo", got "' . $driver . '" — from the '
+                . '$driver argument or ' . Config::scopedKey('DB_DRIVER', $connection) . '.',
             );
         }
 
@@ -136,7 +149,7 @@ final class SqlConnectionFactory
      * type given, not an incidental TypeError several calls deeper once
      * it reaches a real int-typed constructor parameter (ConnectionOptions'
      * own $maxConnections, most notably). Returns null when the key is
-     * genuinely absent, so the caller's own Config-key fallback applies.
+     * absent, so the caller's own Config-key fallback applies.
      *
      * @param array<string, mixed> $poolOptions
      */

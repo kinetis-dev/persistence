@@ -77,7 +77,6 @@ final class ConnectionOptionsTest extends TestCase
         yield 'connectTimeout' => [new ConnectionOptions(connectTimeout: 5)];
         yield 'applicationName' => [new ConnectionOptions(applicationName: 'myapp')];
         yield 'compression' => [new ConnectionOptions(compression: true)];
-        yield 'extraConnectionString' => [new ConnectionOptions(extraConnectionString: 'x=y')];
     }
 
     /**
@@ -104,7 +103,7 @@ final class ConnectionOptionsTest extends TestCase
         \assert(\is_string($field));
 
         $others = \array_values(\array_diff(
-            ['charset', 'collation', 'sslMode', 'sslCa', 'connectTimeout', 'applicationName', 'compression', 'extraConnectionString'],
+            ['charset', 'collation', 'sslMode', 'sslCa', 'connectTimeout', 'applicationName', 'compression'],
             [$field],
         ));
 
@@ -116,7 +115,7 @@ final class ConnectionOptionsTest extends TestCase
     {
         new ConnectionOptions()->rejectUnsupported(
             'test-driver',
-            ['charset', 'collation', 'sslMode', 'sslCa', 'connectTimeout', 'applicationName', 'compression', 'extraConnectionString'],
+            ['charset', 'collation', 'sslMode', 'sslCa', 'connectTimeout', 'applicationName', 'compression'],
         );
         $this->addToAssertionCount(1);
     }

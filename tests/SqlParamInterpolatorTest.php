@@ -8,24 +8,11 @@ use Kinetis\Persistence\Driver\SqlDialect;
 use Kinetis\Persistence\Driver\SqlParamInterpolator;
 use Kinetis\Persistence\Driver\SqlParamPreflight;
 use Kinetis\Persistence\Exception\QueryException;
-use Kinetis\Persistence\Tests\Fixtures\StringableParameter;
 use PHPUnit\Framework\TestCase;
 use stdClass;
 
 final class SqlParamInterpolatorTest extends TestCase
 {
-    /**
-     * The exact, stable diagnostic rejectPlaceholderInsideExecutableComment()
-     * throws — asserted in full below, not just a middle substring, so a
-     * regression in either closing delimiter's own spelling ("/*!...*\/",
-     * not the truncated "/*!.../ " this message once actually shipped
-     * with) would fail a test rather than survive silently.
-     */
-    private const string EXECUTABLE_COMMENT_PLACEHOLDER_MESSAGE = 'A "?" placeholder cannot appear inside a '
-        . 'version-gated executable comment (/*!...*/ or /*M!...*/) — whether it is live depends on the '
-        . 'connected server\'s own version, which the native and PDO drivers would resolve differently for '
-        . 'the same query. Move the bound value outside the comment.';
-
     /** The exact diagnostic assertPositionalKeys() throws. */
     private const string NON_LIST_PARAMS_MESSAGE = 'Query parameters must be a list keyed 0..n-1 in '
         . 'placeholder order; an associative or sparse array is rejected rather than reindexed, so a '
@@ -141,8 +128,8 @@ final class SqlParamInterpolatorTest extends TestCase
     {
         $accepted = [null, true, false, 0, -7, \PHP_INT_MAX, 1.5, -0.5, \PHP_FLOAT_MAX, '', 'x'];
 
-        self::assertSame($accepted, SqlParamInterpolator::assertBindableValues($accepted, 'SELECT 1'));
-        self::assertSame([], SqlParamInterpolator::assertBindableValues([], 'SELECT 1'));
+        self::assertSame($accepted, SqlParamInterpolator::assertBindableValues($accepted, SqlDialect::Mysql, 'SELECT 1'));
+        self::assertSame([], SqlParamInterpolator::assertBindableValues([], SqlDialect::Mysql, 'SELECT 1'));
     }
 
     public function test_an_unbindable_value_names_its_position_and_type_and_no_value(): void
@@ -153,10 +140,6 @@ final class SqlParamInterpolatorTest extends TestCase
         $cases = [
             'array' => [[1, 2], 'Parameter at index 1 is of type array; only null, bool, int, finite float and string can be bound.'],
             'object' => [new stdClass(), 'Parameter at index 1 is of type stdClass; only null, bool, int, finite float and string can be bound.'],
-            // A Stringable is refused with every other object — the
-            // one kind the four drivers would otherwise disagree about.
-            // Format it at the call site instead.
-            'stringable' => [new StringableParameter(), 'Parameter at index 1 is of type ' . StringableParameter::class . '; only null, bool, int, finite float and string can be bound.'],
             'closure' => [static fn (): int => 1, 'Parameter at index 1 is of type Closure; only null, bool, int, finite float and string can be bound.'],
             'resource' => [$stream, 'Parameter at index 1 is of type resource (stream); only null, bool, int, finite float and string can be bound.'],
             'INF' => [\INF, 'Parameter at index 1 is a non-finite float; only a finite float can be bound.'],
@@ -166,7 +149,7 @@ final class SqlParamInterpolatorTest extends TestCase
 
         foreach ($cases as $label => [$value, $message]) {
             try {
-                SqlParamInterpolator::assertBindableValues(['fine', $value, 'also fine'], 'SELECT ?, ?, ?');
+                SqlParamInterpolator::assertBindableValues(['fine', $value, 'also fine'], SqlDialect::Mysql, 'SELECT ?, ?, ?');
                 self::fail("Expected {$label} to be rejected.");
             } catch (QueryException $e) {
                 self::assertSame($message, $e->getMessage(), $label);
@@ -351,102 +334,21 @@ final class SqlParamInterpolatorTest extends TestCase
         );
     }
 
-    public function test_a_placeholder_inside_a_mysql_executable_comment_is_rejected(): void
+    /**
+     * MySQL/MariaDB's version-gated executable comments are comments to
+     * this scanner like any other: their contents are copied through for
+     * the connected server to interpret, and a "?" inside one is not a
+     * bind slot. Whether the server's version gate makes it live is the
+     * server's business, and a mismatch fails loudly there.
+     */
+    public function test_an_executable_comment_is_scanned_as_an_ordinary_comment(): void
     {
-        // Whether "/*! ... */"'s content is even live SQL depends on the
-        // connected server's own version -- something this client-side
-        // scanner has no way to check. Rather than silently require a
-        // different bound-parameter count than PDO's native prepare
-        // would (which defers the same decision to the real server),
-        // Kinetis rejects a "?" here outright, on both drivers alike.
-        $this->expectException(QueryException::class);
-        $this->expectExceptionMessage(self::EXECUTABLE_COMMENT_PLACEHOLDER_MESSAGE);
-
-        self::interpolate('SELECT /*! ? + */ 1 AS n', [2], SqlDialect::Mysql);
-    }
-
-    public function test_a_placeholder_inside_a_mariadb_executable_comment_is_rejected(): void
-    {
-        // MariaDB's own "/*M! ... */" variant is rejected the same way.
-        $this->expectException(QueryException::class);
-        $this->expectExceptionMessage(self::EXECUTABLE_COMMENT_PLACEHOLDER_MESSAGE);
-
-        self::interpolate('SELECT /*M! ? + */ 1 AS n', [2], SqlDialect::Mysql);
-    }
-
-    public function test_a_placeholder_inside_a_version_numbered_executable_comment_is_rejected(): void
-    {
-        // The version-numbered form of either syntax behaves identically
-        // -- the number itself is never inspected.
-        $this->expectException(QueryException::class);
-        $this->expectExceptionMessage(self::EXECUTABLE_COMMENT_PLACEHOLDER_MESSAGE);
-
-        self::interpolate('SELECT /*!50000 ? + */ 1 AS n', [2], SqlDialect::Mysql);
-    }
-
-    public function test_a_mysql_executable_comment_with_no_placeholder_inside_it_is_left_untouched(): void
-    {
-        // The rejection above is scoped precisely to a genuine "?" --
-        // an executable comment with none inside it (optimizer hints,
-        // DEFINER clauses, and the like) is still copied through
-        // verbatim, exactly as it always has been, for the connected
-        // server to interpret on its own.
         self::assertSame(
-            'SELECT /*!50000 STRAIGHT_JOIN */ 1 AS n',
-            self::interpolate('SELECT /*!50000 STRAIGHT_JOIN */ 1 AS n', [], SqlDialect::Mysql),
+            'SELECT /*!50000 STRAIGHT_JOIN */ 1 AS n WHERE c = <1>',
+            self::interpolate('SELECT /*!50000 STRAIGHT_JOIN */ 1 AS n WHERE c = ?', ['1'], SqlDialect::Mysql),
         );
-    }
-
-    public function test_a_doubled_question_mark_inside_an_executable_comment_is_rejected_too(): void
-    {
-        // "??" is the published literal-escape for "?" everywhere else
-        // in this grammar, but it has no established meaning to a real
-        // server's own native placeholder recognition -- so it isn't
-        // treated as safe here either, deliberately: doing so would
-        // just move the same ambiguity to a different spelling of "?"
-        // instead of closing it.
-        $this->expectException(QueryException::class);
-        $this->expectExceptionMessage(self::EXECUTABLE_COMMENT_PLACEHOLDER_MESSAGE);
-
-        self::interpolate('SELECT /*!50000 a ?? b */ 1 AS n', [], SqlDialect::Mysql);
-    }
-
-    public function test_an_executable_comment_marker_at_the_very_end_of_the_string_is_still_recognized(): void
-    {
-        // The "!" is the string's own last byte -- the exact boundary
-        // isExecutableComment()'s "$i + 2 < $length" check has to get
-        // right: one byte less and there'd be nothing at that offset to
-        // read at all. With nothing left in the string to close it,
-        // it's correctly recognized as executable and then correctly
-        // reported as unterminated, the same as any other unclosed
-        // block comment -- never silently passed through unchanged.
-        $this->expectException(QueryException::class);
-        $this->expectExceptionMessage('Unterminated block comment');
-
-        self::interpolate('SELECT /*!', [], SqlDialect::Mysql);
-    }
-
-    public function test_an_unterminated_plain_block_comment_one_byte_shorter_still_throws(): void
-    {
-        // The same length, minus the "!" -- an ordinary, non-executable
-        // block comment that's missing its closing "*/" entirely, which
-        // must still be caught as unterminated rather than silently
-        // treated as executable.
-        $this->expectException(QueryException::class);
-        $this->expectExceptionMessage('Unterminated block comment');
-
-        self::interpolate('SELECT /*', [], SqlDialect::Mysql);
-    }
-
-    public function test_postgres_has_no_executable_comment_syntax(): void
-    {
-        // Postgres has no version-gated comment convention -- "/*! ... */"
-        // is an ordinary, inert block comment there, exactly like any
-        // other "/* ... */".
-        self::assertSame(
-            'SELECT /*! ? + */ 1 AS n',
-            self::interpolate('SELECT /*! ? + */ 1 AS n', [], SqlDialect::Postgres),
-        );
+        self::assertSame(0, self::placeholders('SELECT /*! ? + */ 1 AS n', SqlDialect::Mysql));
+        self::assertSame(0, self::placeholders('SELECT /*M! ? + */ 1 AS n', SqlDialect::Mysql));
     }
 
     public function test_unterminated_block_comment_throws(): void
@@ -710,16 +612,6 @@ final class SqlParamInterpolatorTest extends TestCase
         }
     }
 
-    public function test_the_split_rejects_a_placeholder_inside_an_executable_comment(): void
-    {
-        // The split is the one pass both driver families run, so a query
-        // with no defensible parameter count never gets one on either.
-        $this->expectException(QueryException::class);
-        $this->expectExceptionMessage(self::EXECUTABLE_COMMENT_PLACEHOLDER_MESSAGE);
-
-        SqlParamInterpolator::split('SELECT /*!50000 ? */ 1 AS n', SqlDialect::Mysql);
-    }
-
     public function test_asserting_the_parameter_count_names_both_counts_and_no_value(): void
     {
         // Diagnostics are the two counts and nothing else: the values
@@ -746,6 +638,30 @@ final class SqlParamInterpolatorTest extends TestCase
         // A matching count returns without throwing, which is all it
         // has to do.
         SqlParamInterpolator::assertParameterCount(2, 2, 'SELECT ?, ?');
+    }
+
+    /**
+     * Postgres carries text parameters as C strings, so a NUL would
+     * reach the server truncated at that byte. MySQL transmits one
+     * intact, and VARBINARY/BLOB columns legitimately hold it.
+     */
+    public function test_a_nul_byte_in_a_string_is_rejected_for_postgres_only(): void
+    {
+        self::assertSame(
+            ["a\0b"],
+            SqlParamInterpolator::assertBindableValues(["a\0b"], SqlDialect::Mysql, 'SELECT ?'),
+        );
+
+        try {
+            SqlParamInterpolator::assertBindableValues(['fine', "a\0b"], SqlDialect::Postgres, 'SELECT ?, ?');
+            self::fail('Expected the NUL byte to be rejected.');
+        } catch (QueryException $e) {
+            self::assertSame(
+                'Parameter at index 1 contains a NUL byte; Postgres carries text parameters as C strings, '
+                . 'so the value would reach the server truncated at that byte.',
+                $e->getMessage(),
+            );
+        }
     }
 
     public function test_postgres_escape_strings_do_treat_backslash_as_an_escape(): void

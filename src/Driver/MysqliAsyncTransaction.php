@@ -7,25 +7,28 @@ namespace Kinetis\Persistence\Driver;
 use Closure;
 use Kinetis\Persistence\Contract\MysqlTransaction;
 use Kinetis\Persistence\Contract\SqlResult;
+use Kinetis\Persistence\Exception\QueryException;
 use mysqli;
 
 /**
  * A transaction on {@see MysqliAsyncClient}: pins one connection from the
  * client's pool for its whole lifetime (START TRANSACTION already ran on
  * it), routes query()/execute() to that connection, and hands the
- * connection back on commit/rollback/close.
+ * connection back when it ends.
  */
 final class MysqliAsyncTransaction extends AbstractTransaction implements MysqlTransaction
 {
     /**
-     * @param Closure(mysqli): void $releaseConnection
+     * @param Closure(mysqli, bool): void $releaseConnection Hands the
+     *     connection back to the client; the flag discards it instead of
+     *     returning it to the idle pool.
      */
     public function __construct(
         private readonly MysqliAsyncClient $client,
         private readonly mysqli $connection,
         private readonly Closure $releaseConnection,
     ) {
-        $this->telemetryBegin();
+        parent::__construct();
     }
 
     #[\Override]
@@ -43,11 +46,36 @@ final class MysqliAsyncTransaction extends AbstractTransaction implements MysqlT
     #[\Override]
     protected function finish(bool $commit): void
     {
-        try {
-            $this->client->queryOn($this->connection, $commit ? 'COMMIT' : 'ROLLBACK');
-        } finally {
-            ($this->releaseConnection)($this->connection);
-        }
+        $this->client->queryOn($this->connection, $commit ? 'COMMIT' : 'ROLLBACK');
+    }
+
+    #[\Override]
+    protected function release(bool $discard): void
+    {
+        ($this->releaseConnection)($this->connection, $discard);
+    }
+
+    /**
+     * mysqli exposes no transaction-status accessor, so an implicit
+     * commit — which on MySQL any DDL statement causes — cannot be seen
+     * here at all; keep DDL and raw transaction control out of a
+     * transaction on this driver. What the server does report is the
+     * error number on a statement it rolled the transaction back for,
+     * which is {@see isTerminalFailure()}'s business.
+     *
+     * A closed client has closed this connection with it, and mysqli
+     * answers nothing at all about a closed handle.
+     */
+    #[\Override]
+    protected function stillOnConnection(): bool
+    {
+        return !$this->client->isClosed();
+    }
+
+    #[\Override]
+    protected function isTerminalFailure(QueryException $failure): bool
+    {
+        return MysqlLockFailure::isTerminal($failure);
     }
 
     #[\Override]

@@ -17,13 +17,6 @@ use InvalidArgumentException;
  * A field the selected driver cannot honor is a construction-time
  * InvalidArgumentException naming the field and the driver — never a
  * silent ignore. The supported matrix lives in docs/persistence.md.
- *
- * $extraConnectionString is the raw escape hatch for backends whose
- * native configuration surface *is* a free-form key/value string (libpq)
- * — drivers without such a surface (mysqli, PDO MySQL) reject it loudly.
- * SqlConnectionFactory never populates it from Config; it's a
- * code-level-only option for a caller constructing ConnectionOptions
- * directly.
  */
 final readonly class ConnectionOptions
 {
@@ -41,7 +34,6 @@ final readonly class ConnectionOptions
         public ?string $applicationName = null,
         public ?bool $compression = null,
         public int $maxConnections = 8,
-        public string $extraConnectionString = '',
         public ?string $sslCert = null,
         public ?string $sslKey = null,
     ) {
@@ -178,7 +170,6 @@ final readonly class ConnectionOptions
                 'connectTimeout' => $this->connectTimeout !== null,
                 'applicationName' => $this->applicationName !== null,
                 'compression' => $this->compression !== null,
-                'extraConnectionString' => $this->extraConnectionString !== '',
                 default => throw new InvalidArgumentException("Unknown ConnectionOptions field \"{$field}\"."),
             };
 

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kinetis\Persistence\Tests\Integration;
 
+use Fiber;
 use Kinetis\Persistence\ConnectionOptions;
 use Kinetis\Persistence\Contract\SqlLink;
 use Kinetis\Persistence\Driver\MysqliAsyncClient;
@@ -13,6 +14,8 @@ use Kinetis\Persistence\Driver\PgsqlAsyncClient;
 use Kinetis\Persistence\Exception\ConnectionException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use PHPUnit\Framework\TestCase;
+use Revolt\EventLoop;
+use Throwable;
 
 /**
  * TLS against real, certificate-configured servers — environment-gated
@@ -189,6 +192,49 @@ final class TlsTest extends TestCase
 
         self::assertSame(1, $db->query('SELECT 1 AS ok')->fetchRow()['ok']);
         $db->close();
+    }
+
+    /**
+     * Disposal ends a connection's transport with socket_shutdown()
+     * instead of draining it, and TLS is where that is least obviously
+     * safe: libpq runs OpenSSL over the same descriptor, and closing a
+     * connection the ordinary way means reading every outstanding result
+     * first. Here the outstanding result is five seconds away, so a
+     * disposal that waited on it would show up as five seconds of
+     * stopped worker.
+     */
+    public function test_disposal_abandons_a_statement_in_flight_on_a_tls_connection(): void
+    {
+        $db = self::pgsqlClient('pgsql-async', new ConnectionOptions(
+            sslMode: 'verify-full',
+            sslCa: self::env('TLS_CA'),
+        ));
+        \assert($db instanceof PgsqlAsyncClient);
+        // Connected up front, so starting the Fiber below dispatches
+        // rather than opening a connection.
+        $db->warmUp(1);
+
+        $caught = null;
+        $caller = new Fiber(static function () use ($db, &$caught): void {
+            try {
+                $db->query('SELECT pg_sleep(5)');
+            } catch (Throwable $e) {
+                $caught = $e;
+            }
+        });
+        $caller->start();
+
+        $started = \microtime(true);
+        $db->close();
+        $spent = \microtime(true) - $started;
+
+        // The caller is settled from a loop callback, so it comes back
+        // here rather than inside close().
+        EventLoop::run();
+
+        self::assertLessThan(1.0, $spent, 'Disposal must not wait on the statement it abandons.');
+        self::assertInstanceOf(ConnectionException::class, $caught);
+        self::assertStringContainsString('unknown', $caught->getMessage());
     }
 
     private static function requireMutualTlsOptions(): ConnectionOptions

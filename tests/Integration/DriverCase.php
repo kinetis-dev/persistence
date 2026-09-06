@@ -40,31 +40,8 @@ abstract class DriverCase extends TestCase
 
     protected static function makeClient(string $driver, ?ConnectionOptions $options = null): SqlLink
     {
-        $mysqlEnv = \getenv('MYSQL_HOST');
-        $postgresEnv = \getenv('POSTGRES_HOST');
-
-        if (\str_contains($driver, 'mysql') && $mysqlEnv === false) {
-            self::markTestSkipped('MYSQL_HOST is not set — real-backend driver tests are environment-gated.');
-        }
-
-        if (\str_contains($driver, 'pgsql') && $postgresEnv === false) {
-            self::markTestSkipped('POSTGRES_HOST is not set — real-backend driver tests are environment-gated.');
-        }
-
-        $mysqlArgs = [
-            (string) $mysqlEnv,
-            \getenv('MYSQL_USER') ?: 'testuser',
-            \getenv('MYSQL_PASSWORD') ?: 'testpass',
-            \getenv('MYSQL_DATABASE') ?: 'testdb',
-            (int) (\getenv('MYSQL_PORT') ?: 3306),
-        ];
-        $postgresArgs = [
-            (string) $postgresEnv,
-            \getenv('POSTGRES_USER') ?: 'testuser',
-            \getenv('POSTGRES_PASSWORD') ?: 'testpass',
-            \getenv('POSTGRES_DATABASE') ?: 'testdb',
-            (int) (\getenv('POSTGRES_PORT') ?: 5432),
-        ];
+        $mysqlArgs = \str_contains($driver, 'mysql') ? self::mysqlArgs() : [];
+        $postgresArgs = \str_contains($driver, 'pgsql') ? self::postgresArgs() : [];
 
         return match ($driver) {
             'mysqli-async' => new MysqliAsyncClient(...[...$mysqlArgs, $options ?? new ConnectionOptions(maxConnections: 4)]),
@@ -72,6 +49,51 @@ abstract class DriverCase extends TestCase
             'pgsql-async' => new PgsqlAsyncClient(...[...$postgresArgs, $options ?? new ConnectionOptions(maxConnections: 4)]),
             'pdo-pgsql' => new PdoPgsqlClient(...[...$postgresArgs, $options]),
         };
+    }
+
+    /**
+     * The connection arguments every Postgres client here is built from,
+     * in constructor order. Skips the calling test when no server is
+     * configured, which is how the whole suite stays database-free
+     * outside the integration jobs.
+     *
+     * @return array{string, string, string, string, int}
+     */
+    protected static function postgresArgs(): array
+    {
+        $host = \getenv('POSTGRES_HOST');
+
+        if ($host === false) {
+            self::markTestSkipped('POSTGRES_HOST is not set — real-backend driver tests are environment-gated.');
+        }
+
+        return [
+            (string) $host,
+            \getenv('POSTGRES_USER') ?: 'testuser',
+            \getenv('POSTGRES_PASSWORD') ?: 'testpass',
+            \getenv('POSTGRES_DATABASE') ?: 'testdb',
+            (int) (\getenv('POSTGRES_PORT') ?: 5432),
+        ];
+    }
+
+    /**
+     * @return array{string, string, string, string, int}
+     */
+    protected static function mysqlArgs(): array
+    {
+        $host = \getenv('MYSQL_HOST');
+
+        if ($host === false) {
+            self::markTestSkipped('MYSQL_HOST is not set — real-backend driver tests are environment-gated.');
+        }
+
+        return [
+            (string) $host,
+            \getenv('MYSQL_USER') ?: 'testuser',
+            \getenv('MYSQL_PASSWORD') ?: 'testpass',
+            \getenv('MYSQL_DATABASE') ?: 'testdb',
+            (int) (\getenv('MYSQL_PORT') ?: 3306),
+        ];
     }
 
     protected static function isMysql(string $driver): bool

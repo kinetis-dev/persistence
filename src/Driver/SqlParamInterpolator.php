@@ -13,41 +13,22 @@ use Closure;
  * needs: an escaped literal for mysqli (whose async mode has no
  * server-side bind step), or "$1".."$n" for pg_send_query_params.
  *
- * A dialect-aware scanner, not a generic one shared verbatim between
- * both drivers — MySQL and Postgres disagree on enough lexical detail
- * (backslash escaping, comment syntax, nested comments, dollar-quoted
- * strings) that a single quote-tracking pass over both was silently
- * miscounting "?" in valid SQL under real reproduction: inside line
- * comments (both "--" and MySQL's "#"), block comments, Postgres
- * $$...$$/$tag$...$tag$ strings, and standard (non-escape) Postgres
- * strings where a backslash is ordinary data, not an escape character.
+ * The scanner is dialect-aware because MySQL and Postgres disagree on
+ * enough lexical detail — backslash escaping, comment syntax, nested
+ * comments, dollar-quoted strings — that which "?" is a placeholder is
+ * a dialect question. Placeholders are recognized only *outside* quoted
+ * regions, comments and dollar-quoted strings; a "?" inside any of them
+ * is data. "??" is the published escape for a literal, non-placeholder
+ * "?", which Postgres's own jsonb "?"/"?|"/"?&" operators need, being
+ * lexically identical to a bind placeholder where they appear.
  *
- * Placeholders are only recognized *outside* quoted regions, comments,
- * and dollar-quoted strings — a "?" inside any of those is data, not a
- * slot. "??" is a published escape for a literal, non-placeholder "?" —
- * needed for Postgres's own jsonb "?"/"?|"/"?&" operators, which are
- * lexically identical to a bind placeholder at the position they
- * appear; Doctrine DBAL uses the same doubling convention for the
- * identical reason.
- *
- * Two MySQL-specific rules beyond ordinary comment scanning, confirmed
- * against a real MySQL 8.4 server rather than assumed from the "--"/"/*"
- * syntax alone: a "--" only opens a comment when the second dash is
- * followed by whitespace, a control character, or the end of the string
- * — "5--?" is "5 - - ?" (two minus signs and a real placeholder), not a
- * comment, and MySQL's own parser agrees. Postgres has no such
- * condition; a bare "--" always opens a comment there. And "/*!...*\/"
- * (MySQL) / "/*M!...*\/" (MariaDB) are *executable* comments — the
- * server runs what's inside them, subject to its own version gating
- * against the connected server's actual version. Whether that gate is
- * satisfied can only be decided by asking the live connection, which
- * this client-side scanner never does — so a "?" inside one is rejected
- * outright rather than guessed at (see rejectPlaceholderInsideExecutableComment()),
- * on both the native and PDO drivers alike — the latter run the same
- * split for its count alone, before PDO ever sees the query. The
- * content itself, gate satisfied or not, is otherwise left untouched —
- * copied through verbatim for the connected server to interpret on its
- * own, exactly as it always has for a comment with no placeholder in it.
+ * Two rules are MySQL's rather than a generic reading of the syntax. A
+ * "--" only opens a comment when the second dash is followed by
+ * whitespace, a control character, or the end of the string: "5--?" is
+ * "5 - - ?", a real placeholder. Postgres has no such condition. And a
+ * backslash escapes inside a MySQL quoted region but is ordinary data
+ * inside a standard Postgres one, where only E'...' gives it that
+ * meaning.
  *
  * Alongside the rewrite, this class holds the positional-parameter rules
  * every driver is bound by: list keying, exactly one argument per
@@ -172,13 +153,19 @@ final class SqlParamInterpolator
      * and casting them yields "INF"/"NAN" for the server to fail on far
      * from the call site that bound them.
      *
+     * One rule is dialect-scoped: Postgres carries text parameters as C
+     * strings, so a string holding a NUL byte would reach the server
+     * truncated at that byte. MySQL transmits it intact — escaped by
+     * real_escape_string, bound as binary by PDO — and VARBINARY/BLOB
+     * columns legitimately hold one.
+     *
      * A rejection names the position and the type, never the value.
      *
      * @param array<array-key, mixed> $params
      * @return list<null|bool|int|float|string> The same values, in the
      *     same order, typed to the contract they were just held to.
      */
-    public static function assertBindableValues(array $params, string $sql = ''): array
+    public static function assertBindableValues(array $params, SqlDialect $dialect, string $sql = ''): array
     {
         $values = [];
         $index = 0;
@@ -199,6 +186,14 @@ final class SqlParamInterpolator
                 ), $sql);
             }
 
+            if ($dialect === SqlDialect::Postgres && \is_string($value) && \str_contains($value, "\0")) {
+                throw new QueryException(\sprintf(
+                    'Parameter at index %d contains a NUL byte; Postgres carries text parameters as C '
+                    . 'strings, so the value would reach the server truncated at that byte.',
+                    $index,
+                ), $sql);
+            }
+
             $values[] = $value;
             $index++;
         }
@@ -216,9 +211,7 @@ final class SqlParamInterpolator
      * between. Both driver families read the identical set of slots
      * because both read this one.
      *
-     * Throws when $sql has no defensible set of slots at all — a "?"
-     * inside a MySQL executable comment
-     * ({@see rejectPlaceholderInsideExecutableComment()}), an
+     * Throws when $sql has no defensible set of slots at all — an
      * unterminated block comment or dollar-quoted string.
      *
      * @return list<string> The literal text between the placeholders,
@@ -348,58 +341,6 @@ final class SqlParamInterpolator
     }
 
     /**
-     * "/*!...*\/" (MySQL) and "/*M!...*\/" (MariaDB) are executable
-     * comments — the server runs the content inside them (subject to its
-     * own version-number gating, e.g. "/*!50000...*\/"), so they're not
-     * inert the way an ordinary block comment is. $sql[$i] is the "/" of
-     * the opening "/*".
-     */
-    private static function isExecutableComment(string $sql, int $i, int $length): bool
-    {
-        if ($i + 2 < $length && $sql[$i + 2] === '!') {
-            return true;
-        }
-
-        return $i + 3 < $length && $sql[$i + 2] === 'M' && $sql[$i + 3] === '!';
-    }
-
-    /**
-     * Throws if $content — an executable comment's own text, opening
-     * "/*!"/"/*M!" and closing "*\/" both included — contains a "?" at
-     * all, the published "??" literal escape deliberately not exempted
-     * (see the reasoning inline below). Whether such a placeholder is
-     * actually live depends on the connected server's own version (and,
-     * for "/*M!", whether it's MariaDB at all), which neither native
-     * driver knows without asking the connection — rather than risk the
-     * native and PDO drivers silently disagreeing on how many bound
-     * parameters a query needs depending on server version, Kinetis
-     * narrows the supported grammar and rejects the combination outright,
-     * identically everywhere. Doesn't track quotes or nested comments
-     * inside $content: the combination this guards against is already
-     * esoteric enough that erring toward rejecting an occurrence that
-     * would, in fact, have been inert — inside a further quote or comment
-     * nested within the executable comment itself — is an acceptable,
-     * disclosed narrowing, not a correctness gap.
-     */
-    private static function rejectPlaceholderInsideExecutableComment(string $content): void
-    {
-        // The doubled "??" literal-escape convention is deliberately not
-        // honored here, unlike everywhere else in this class: it has no
-        // established meaning to a real server's own native placeholder
-        // recognition either, so treating it as safe would just move the
-        // exact ambiguity this method exists to close from one spelling
-        // of "?" to another instead of actually closing it.
-        if (\str_contains($content, '?')) {
-            throw new QueryException(
-                'A "?" placeholder cannot appear inside a version-gated executable comment '
-                . '(/*!...*/ or /*M!...*/) — whether it is live depends on the connected '
-                . 'server\'s own version, which the native and PDO drivers would resolve '
-                . 'differently for the same query. Move the bound value outside the comment.',
-            );
-        }
-    }
-
-    /**
      * Tries to consume a comment or Postgres dollar-quoted span starting
      * at $sql[$i], outside any regular quote — the four constructs
      * {@see split()} has to recognize before falling through to
@@ -462,8 +403,10 @@ final class SqlParamInterpolator
     }
 
     /**
-     * A "/* ... *\/" block comment, both dialects — rejecting a "?"
-     * inside it first when it's also an executable comment.
+     * A "/* ... *\/" block comment, both dialects. MySQL's version-gated
+     * executable comments ("/*!...*\/", "/*M!...*\/") are comments here
+     * like any other: their contents are copied through for the
+     * connected server to interpret, and a "?" inside one is not a slot.
      *
      * @return array{0: string, 1: int}|null
      */
@@ -473,15 +416,9 @@ final class SqlParamInterpolator
             return null;
         }
 
-        $isExecutable = $dialect === SqlDialect::Mysql && self::isExecutableComment($sql, $i, $length);
         $end = self::blockCommentEnd($sql, $i, $length, $dialect);
-        $content = \substr($sql, $i, $end - $i);
 
-        if ($isExecutable) {
-            self::rejectPlaceholderInsideExecutableComment($content);
-        }
-
-        return [$content, $end];
+        return [\substr($sql, $i, $end - $i), $end];
     }
 
     /**

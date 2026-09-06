@@ -134,8 +134,35 @@ final class SqlConnectionFactoryTest extends TestCase
         ]);
 
         $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage('DB_DRIVER must be "auto", "native", or "pdo", got "odbc".');
+        $this->expectExceptionMessage('The database driver must be "auto", "native", or "pdo", got "odbc"');
         SqlConnectionFactory::fromConfig($config);
+    }
+
+    /**
+     * kinetis/migrations needs one connection that is never replaced,
+     * whatever the deployment's own DB_DRIVER says, because the advisory
+     * lock it holds is scoped to the database session.
+     */
+    public function test_an_explicit_driver_argument_overrides_the_db_driver_key(): void
+    {
+        $mysql = new Config(['DB_CONNECTION' => 'mysql', 'DB_DRIVER' => 'native', 'DB_PASSWORD' => 's']);
+        $postgres = new Config(['DB_CONNECTION' => 'pgsql', 'DB_DRIVER' => 'native', 'DB_PASSWORD' => 's']);
+
+        self::assertInstanceOf(PdoMysqlClient::class, SqlConnectionFactory::fromConfig($mysql, driver: 'pdo'));
+        self::assertInstanceOf(PdoPgsqlClient::class, SqlConnectionFactory::fromConfig($postgres, driver: 'pdo'));
+
+        // And without it, the key still decides.
+        self::assertInstanceOf(MysqliAsyncClient::class, SqlConnectionFactory::fromConfig($mysql));
+    }
+
+    public function test_an_unknown_driver_argument_is_rejected_like_the_key(): void
+    {
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessage('The database driver must be "auto", "native", or "pdo", got "odbc"');
+        SqlConnectionFactory::fromConfig(
+            new Config(['DB_CONNECTION' => 'mysql', 'DB_PASSWORD' => 's']),
+            driver: 'odbc',
+        );
     }
 
     public function test_an_option_the_selected_driver_cannot_honor_fails_loudly(): void
@@ -501,7 +528,6 @@ final class SqlConnectionFactoryTest extends TestCase
         $options = self::property($direct, 'options');
         self::assertInstanceOf(ConnectionOptions::class, $options);
         self::assertSame('/certs/ca.pem', $options->sslCa);
-        self::assertSame('', $options->extraConnectionString);
     }
 
     public function test_mysql_drivers_construct_with_a_verifying_tls_profile(): void

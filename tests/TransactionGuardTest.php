@@ -6,7 +6,6 @@ namespace Kinetis\Persistence\Tests;
 
 use Kinetis\Container\AppScope;
 use Kinetis\Container\TransactionGuardHook;
-use Kinetis\Persistence\Exception\TransactionException;
 use Kinetis\Persistence\TransactionGuard;
 use Kinetis\Persistence\Tests\Fixtures\InMemoryLogger;
 use Kinetis\Persistence\Tests\Fixtures\FakeSqlLink;
@@ -108,11 +107,12 @@ final class TransactionGuardTest extends TestCase
     }
 
     /**
-     * A cleanup fault on one connection must never leak transactions/locks
-     * on every later tracked one — rollbackDangling() attempts every
-     * tracked transaction independently.
+     * A cleanup fault on one connection must never leak transactions and
+     * locks on every later tracked one — rollbackDangling() attempts
+     * every tracked transaction independently, and rethrows the first
+     * failure only once they all have been.
      */
-    public function test_a_first_dangling_transactions_isActive_failure_does_not_prevent_a_later_one_from_being_rolled_back(): void
+    public function test_a_first_dangling_transactions_isActive_failure_does_not_prevent_a_later_one_from_being_closed(): void
     {
         $guard = new TransactionGuard(new InMemoryLogger());
         $link = new FakeSqlLink();
@@ -123,15 +123,15 @@ final class TransactionGuardTest extends TestCase
 
         try {
             $guard->rollbackDangling();
-            self::fail('Expected a TransactionException.');
-        } catch (TransactionException) {
+            self::fail('Expected the inspection failure.');
+        } catch (LogicException) {
         }
 
-        self::assertFalse($link->transactions[0]->rolledBack, 'inspection itself failed, so rollback() was never even reached for this one');
+        self::assertFalse($link->transactions[0]->rolledBack, 'inspection itself failed, so close() was never even reached for this one');
         self::assertTrue($link->transactions[1]->rolledBack, 'the second transaction was still attempted despite the first one failing');
     }
 
-    public function test_a_first_dangling_transactions_rollback_failure_does_not_prevent_a_later_one_from_being_rolled_back(): void
+    public function test_a_first_dangling_transactions_close_failure_does_not_prevent_a_later_one_from_being_closed(): void
     {
         $guard = new TransactionGuard(new InMemoryLogger());
         $link = new FakeSqlLink();
@@ -142,11 +142,11 @@ final class TransactionGuardTest extends TestCase
 
         try {
             $guard->rollbackDangling();
-            self::fail('Expected a TransactionException.');
-        } catch (TransactionException) {
+            self::fail('Expected the close failure.');
+        } catch (LogicException) {
         }
 
-        self::assertFalse($link->transactions[0]->rolledBack, 'rollback() itself threw, so this one never actually closed');
+        self::assertFalse($link->transactions[0]->rolledBack, 'close() itself threw, so this one never actually closed');
         self::assertTrue($link->transactions[1]->rolledBack, 'the second transaction was still attempted despite the first one failing');
     }
 
@@ -155,8 +155,8 @@ final class TransactionGuardTest extends TestCase
      * behavior: a warning()-log failure while reporting an already-
      * successful rollback must not misclassify that rollback as a
      * failure, must not prevent a later tracked transaction from being
-     * attempted, and must not itself surface as a TransactionException —
-     * the rollback genuinely succeeded, the logger just couldn't say so.
+     * attempted, and must not surface as a failure at all — the rollback
+     * succeeded, the logger just could not say so.
      */
     public function test_a_log_failure_reporting_a_successful_rollback_does_not_misclassify_it_or_block_a_later_one(): void
     {
@@ -181,10 +181,10 @@ final class TransactionGuardTest extends TestCase
 
     /**
      * The same proof for the failure-reporting path: an error()-log
-     * failure while reporting a genuine isActive()/rollback failure must
+     * failure while reporting a genuine isActive()/close failure must
      * not prevent a later tracked transaction from being attempted.
      */
-    public function test_a_log_failure_reporting_a_genuine_rollback_failure_does_not_block_a_later_one(): void
+    public function test_a_log_failure_reporting_a_genuine_close_failure_does_not_block_a_later_one(): void
     {
         $logger = new ThrowingLogger();
         $logger->throwOnError = true;
@@ -197,8 +197,8 @@ final class TransactionGuardTest extends TestCase
 
         try {
             $guard->rollbackDangling();
-            self::fail('Expected a TransactionException — the rollback failure itself is still real.');
-        } catch (TransactionException) {
+            self::fail('Expected the close failure — it is still real.');
+        } catch (LogicException) {
         }
 
         self::assertFalse($link->transactions[0]->rolledBack, 'rollback() itself threw, so this one never actually closed');
@@ -210,7 +210,7 @@ final class TransactionGuardTest extends TestCase
      * so a transaction a call already attempted, successfully or not, is
      * never retried by a later call.
      */
-    public function test_a_failed_rollback_is_not_retried_on_a_second_call(): void
+    public function test_a_failed_close_is_not_retried_on_a_second_call(): void
     {
         $guard = new TransactionGuard(new InMemoryLogger());
         $link = new FakeSqlLink();
@@ -220,20 +220,20 @@ final class TransactionGuardTest extends TestCase
 
         try {
             $guard->rollbackDangling();
-            self::fail('Expected a TransactionException.');
-        } catch (TransactionException) {
+            self::fail('Expected the close failure.');
+        } catch (LogicException) {
         }
 
         // If the failed transaction were still tracked, this call would
-        // attempt rollback() again — still toggled to fail — and throw a
+        // attempt close() again — still toggled to fail — and throw a
         // second time. It doesn't, because the first call already cleared
         // tracking regardless of the failure.
         $guard->rollbackDangling();
 
-        self::assertTrue(true);
+        self::assertTrue($link->transactions[0]->isActive());
     }
 
-    public function test_rollback_dangling_does_not_log_success_for_a_failed_rollback(): void
+    public function test_rollback_dangling_does_not_log_success_for_a_failed_close(): void
     {
         $logger = new InMemoryLogger();
         $guard = new TransactionGuard($logger);
@@ -244,16 +244,15 @@ final class TransactionGuardTest extends TestCase
 
         try {
             $guard->rollbackDangling();
-            self::fail('Expected a TransactionException.');
-        } catch (TransactionException $e) {
-            self::assertStringContainsString('Failed to roll back', $e->getMessage());
-            self::assertInstanceOf(LogicException::class, $e->getPrevious());
+            self::fail('Expected the close failure.');
+        } catch (LogicException $e) {
+            self::assertSame('Rollback failed.', $e->getMessage());
         }
 
         $warnings = array_values(array_filter($logger->records, static fn (array $r): bool => $r['level'] === 'warning'));
         $errors = array_values(array_filter($logger->records, static fn (array $r): bool => $r['level'] === 'error'));
 
-        self::assertSame([], $warnings, 'no success warning for a rollback that actually failed');
+        self::assertSame([], $warnings, 'no success warning for a close that actually failed');
         self::assertCount(1, $errors, 'the failure is still observable through the log, not only the thrown exception');
         self::assertInstanceOf(LogicException::class, $errors[0]['context']['exception']);
     }

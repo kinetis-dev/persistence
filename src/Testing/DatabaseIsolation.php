@@ -5,30 +5,16 @@ declare(strict_types=1);
 namespace Kinetis\Persistence\Testing;
 
 use InvalidArgumentException;
-use Kinetis\Persistence\Contract\SqlLink;
-use Kinetis\Persistence\Driver\PdoMysqlClient;
-use Kinetis\Persistence\Driver\PdoPgsqlClient;
 
 /**
- * The checks {@see DatabaseTransactions} and {@see DatabaseTruncation}
- * share. Not part of either trait, so a test class using both doesn't
- * inherit the same method twice.
+ * The checks {@see DatabaseTruncation} needs. A class rather than a
+ * private method on the trait, so a test class using the trait does not
+ * inherit it as its own method.
  *
  * @internal
  */
 final class DatabaseIsolation
 {
-    /**
-     * Whether every statement on this client necessarily lands on one
-     * connection — the property transaction-based isolation depends on.
-     * True for the PDO drivers, which hold exactly one; false for the
-     * native async drivers, which pool.
-     */
-    public static function isSingleConnection(SqlLink $link): bool
-    {
-        return $link instanceof PdoMysqlClient || $link instanceof PdoPgsqlClient;
-    }
-
     /**
      * Table names reach SQL as identifiers, not bound parameters, so they
      * are constrained to identifier characters — a test-only helper is

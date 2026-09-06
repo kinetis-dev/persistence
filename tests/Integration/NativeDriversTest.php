@@ -245,8 +245,10 @@ final class NativeDriversTest extends DriverCase
 
     /**
      * close() with a transaction still in flight tears the pinned
-     * connection down immediately; the transaction's own finish() runs
-     * afterwards and must not tear it down a second time — closing a
+     * connection down with every other one, and the transaction is over
+     * with the session that held it. Its own rollback() then sends
+     * nothing — there is nothing left on the connection to roll back —
+     * and must not tear the handle down a second time: closing a
      * libpq/mysqli handle twice is an error, not a no-op.
      */
     #[DataProvider('nativeDrivers')]
@@ -257,13 +259,8 @@ final class NativeDriversTest extends DriverCase
 
         $db->close();
 
-        try {
-            $tx->rollback();
-            self::fail('Expected the rollback on a closed client to throw.');
-        } catch (ConnectionException) {
-            // The ROLLBACK statement cannot be dispatched — expected.
-        }
-
+        self::assertTrue($tx->isClosed());
+        $tx->rollback();
         self::assertTrue($tx->isClosed());
 
         $fresh = self::makeClient($driver);

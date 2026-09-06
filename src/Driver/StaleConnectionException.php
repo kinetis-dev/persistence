@@ -19,11 +19,13 @@ use Kinetis\Persistence\Exception\ConnectionException;
  * connection dies, which is not "nothing": writing to a socket whose
  * peer is already gone is buffered locally rather than failing, so the
  * first query on a newly-dead connection dispatches fine and only
- * discovers the death while reaping — one QueryException the caller has
- * to handle. The dispatch after that does fail immediately, which is
- * this class's path: mark broken, tear down, retry once on a fresh
- * connection, transparent to the caller. A dead pooled connection
- * therefore costs exactly one error, never a poisoned pool.
+ * discovers the death while reaping — one error the caller has to
+ * handle, a ConnectionException where the client can tell the session
+ * is gone and a QueryException where the server answered. The dispatch
+ * after that does fail immediately, which is this class's path: mark
+ * broken, tear down, retry once on a fresh connection, transparent to
+ * the caller. A dead pooled connection therefore costs exactly one
+ * error, never a poisoned pool.
  *
  * Escapes to callers as its ConnectionException parent when the
  * one-retry budget is exhausted, or immediately when it happens on a

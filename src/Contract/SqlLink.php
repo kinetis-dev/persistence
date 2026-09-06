@@ -15,6 +15,17 @@ interface SqlLink
 {
     /**
      * Executes complete SQL text with no parameter binding.
+     *
+     * One statement per call. Where a driver can observe more than one
+     * result set, the call throws Exception\QueryException instead of
+     * returning the first, and the rest are drained or the connection
+     * discarded: draining them would block the event loop on the async
+     * drivers, and leaving them unread poisons the connection for
+     * everything that borrows it next. PDO Postgres is the one driver
+     * that cannot observe it — libpq runs a semicolon-separated string
+     * as a single command and reports only its last result, so such a
+     * call there returns that last result and no error. Issue one
+     * execute()/query() per statement on every driver.
      */
     public function query(string $sql): SqlResult;
 
@@ -34,6 +45,9 @@ interface SqlLink
      * connection from its pool, opens one, configures it, or prepares
      * anything, so a refused call reaches no server and opens nothing
      * to reach one with.
+     *
+     * The one-statement-per-call rule on {@see query()} applies here
+     * too.
      *
      * @param list<mixed> $params
      */

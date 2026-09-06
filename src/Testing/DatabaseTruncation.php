@@ -11,14 +11,12 @@ use PHPUnit\Framework\Attributes\Before;
 /**
  * Isolates each test by emptying the tables it names, before it runs.
  *
- * Slower than {@see DatabaseTransactions} — real DELETEs against real
- * tables — but it holds no transaction of its own, so it works for code
- * that opens its own transactions and for the pooled async drivers alike.
- * Reach for it when the faster trait's boundary applies.
+ * Real DELETEs against real tables, holding no transaction of its own —
+ * so it works for code that opens its own transactions, and on every
+ * driver.
  *
- * Truncating *before* rather than after is deliberate: a failed test
- * leaves its rows in place to inspect, and the next run still starts
- * clean either way.
+ * Truncating *before* rather than after leaves a failed test's rows in
+ * place to inspect, and the next run still starts clean either way.
  *
  *     use DatabaseTruncation;
  *

@@ -69,10 +69,9 @@ final class SqlParamPreflight
         $segments = $this->segments[$sql] ?? null;
 
         if ($segments === null) {
-            // Scanned before the memo is touched, so a query carrying
-            // a "?" the scan refuses outright — one inside a MySQL
-            // executable comment — throws here rather than becoming an
-            // entry a later call would trust.
+            // Scanned before the memo is touched, so SQL the scan
+            // refuses outright throws here rather than becoming an entry
+            // a later call would trust.
             $segments = SqlParamInterpolator::split($sql, $this->dialect);
 
             if (\count($this->segments) >= self::MAX_ENTRIES) {
@@ -84,6 +83,6 @@ final class SqlParamPreflight
 
         SqlParamInterpolator::assertParameterCount(\count($segments) - 1, \count($params), $sql);
 
-        return new PreflightedQuery($sql, $segments, SqlParamInterpolator::assertBindableValues($params, $sql));
+        return new PreflightedQuery($sql, $segments, SqlParamInterpolator::assertBindableValues($params, $this->dialect, $sql));
     }
 }

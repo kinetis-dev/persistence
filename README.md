@@ -46,14 +46,14 @@ client from `Kinetis\Config` (the `DB_*` keys below, or their
 `DB_CONNECTION` is set — this package's bootstrap registers it before
 the application's own `bootstrap.php`, which wins on the same binding.
 
-`TransactionGuard` is the genuinely Kinetis-specific piece: request-scoped, autowired fresh
-per `RequestScope` like any other unregistered class, tracking every
-transaction it starts so a request that throws before committing or
-rolling back doesn't leak an open transaction into whatever the pooled
-connection is reused for next. `Kinetis\Http\Kernel` wires
-`rollbackDangling()` into `RequestScope::onDispose()` automatically
-whenever this package is installed — a genuine no-op for a request that
-never opens one.
+`TransactionGuard` is the Kinetis-specific piece: request-scoped,
+autowired fresh per `RequestScope` like any other unregistered class,
+tracking every transaction it starts so a request that throws before
+committing or rolling back doesn't leak an open transaction into
+whatever the pooled connection is reused for next. `Kinetis\Http\Kernel`
+wires `rollbackDangling()` into `RequestScope::onDispose()` automatically
+whenever this package is installed — a no-op for a request that never
+opens one.
 
 Optional: an application with no database at all can skip this package
 entirely — `Kinetis\Http\Kernel` degrades gracefully (`class_exists()`
@@ -113,7 +113,9 @@ Full reference across every package:
 composer require kinetis/persistence
 ```
 
-Requires PHP 8.4+ and [`kinetis/framework`](https://github.com/kinetis-dev/framework). Full documentation:
+Requires PHP 8.4+ and [`kinetis/framework`](https://github.com/kinetis-dev/framework),
+plus the extension for the driver you use: `ext-mysqli`, `ext-pgsql`
+(with `ext-sockets`), `ext-pdo_mysql` or `ext-pdo_pgsql`. Full documentation:
 [kinetis.dev/docs/persistence.html](https://kinetis.dev/docs/persistence.html).
 
 ## License

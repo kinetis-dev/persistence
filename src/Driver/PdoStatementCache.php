@@ -76,4 +76,14 @@ final class PdoStatementCache
 
         return $statement;
     }
+
+    /**
+     * Drops every prepared statement. A PDOStatement holds its
+     * connection open, so a discarded connection is only handed back to
+     * the server once the memo built on it is empty.
+     */
+    public function clear(): void
+    {
+        $this->entries = [];
+    }
 }

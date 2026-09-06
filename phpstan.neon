@@ -4,16 +4,12 @@ parameters:
         - src
 
     ignoreErrors:
-        # These traits exist for *consumers'* test suites, so nothing in
-        # src/ will ever use them — "used zero times" is their permanent,
-        # correct state here, not a sign of dead code. They are exercised
+        # This trait exists for *consumers'* test suites, so nothing in
+        # src/ will ever use it — "used zero times" is its permanent,
+        # correct state here, not a sign of dead code. It is exercised
         # against a real database by this package's own
-        # tests/Integration/DatabaseTransactionsTest and
-        # DatabaseTruncationTest, which PHPStan's `paths` deliberately
-        # doesn't cover.
-        -
-            identifier: trait.unused
-            path: src/Testing/DatabaseTransactions.php
+        # tests/Integration/DatabaseTruncationTest, which PHPStan's
+        # `paths` deliberately doesn't cover.
         -
             identifier: trait.unused
             path: src/Testing/DatabaseTruncation.php
