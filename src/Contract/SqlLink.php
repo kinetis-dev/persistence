@@ -53,6 +53,22 @@ interface SqlLink
      */
     public function execute(string $sql, array $params = []): SqlResult;
 
+    /**
+     * Begins a transaction pinned to one connection, which the Fiber
+     * that called this runs every statement of it through until it
+     * commits or rolls back.
+     *
+     * `Kinetis\Persistence\TransactionGuard::transaction()` is the
+     * request-safe route to this: it commits on success, rolls back on
+     * any throw and ends the transaction before returning either way,
+     * so no path out of the work leaves one open. Calling this directly
+     * makes ending it the caller's own job.
+     *
+     * A transaction nothing ever ends is not left holding its
+     * connection — {@see SqlTransaction} for what happens to one that
+     * is dropped instead. It costs the connection and the certainty,
+     * which is why the guard is the normal route and this is not.
+     */
     public function beginTransaction(): SqlTransaction;
 
     public function close(): void;

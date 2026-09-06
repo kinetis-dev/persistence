@@ -16,6 +16,7 @@ use Kinetis\Persistence\Exception\TransactionException;
 use PDO;
 use PDOException;
 use PDOStatement;
+use WeakReference;
 
 /**
  * The execution body both PDO clients share — everything except how the
@@ -29,6 +30,11 @@ use PDOStatement;
  * caller's statements in another's transaction, committing or rolling
  * back work that never asked to be part of it. Closing the client ends
  * that transaction first, since it holds the same connection.
+ *
+ * Ownership is held weakly, so a transaction nobody ended can still be
+ * destroyed and give the connection up — the one way out a client
+ * holding a single connection has, since the alternative is holding
+ * that session and its locks until the client itself goes.
  *
  * @internal
  *
@@ -51,8 +57,22 @@ trait PdoExecutionTrait
 
     private ?PdoStatementCache $statements = null;
 
-    /** The transaction currently holding this client's connection, if any. */
-    private ?SqlTransaction $owningTransaction = null;
+    /**
+     * The transaction currently holding this client's connection, if
+     * any — weakly, so the client is never what keeps it alive. A
+     * transaction application code began directly and then dropped ends
+     * itself when its last reference goes
+     * ({@see AbstractTransaction::__destruct()}); a strong reference
+     * here would be that last reference, and the client would hold the
+     * session, its transaction and its locks for the rest of its own
+     * life. Weak rather than absent because the client still has to
+     * reach a live transaction: close() ends it, and
+     * {@see assertNoTransaction()} asks it whether the server has ended
+     * it already.
+     *
+     * @var WeakReference<SqlTransaction>|null
+     */
+    private ?WeakReference $owningTransaction = null;
 
     /**
      * Opens the connection now instead of on first use. A PDO client is
@@ -112,7 +132,7 @@ trait PdoExecutionTrait
         // keeps its connection open as surely as the handle does. It
         // ends whether or not its rollback reaches the server, so the
         // connection is dropped either way.
-        $transaction = $this->owningTransaction;
+        $transaction = $this->heldTransaction();
         $this->owningTransaction = null;
 
         try {
@@ -196,7 +216,7 @@ trait PdoExecutionTrait
             throw new QueryException('Failed to begin transaction: ' . $e->getMessage(), '', $e, PdoError::vendorCode($e));
         }
 
-        return $this->owningTransaction = $make(
+        $transaction = $make(
             $this->connection(),
             $this->statementCache(),
             function (bool $discard): void {
@@ -211,6 +231,9 @@ trait PdoExecutionTrait
                 }
             },
         );
+        $this->owningTransaction = WeakReference::create($transaction);
+
+        return $transaction;
     }
 
     private function assertNoTransaction(): void
@@ -219,7 +242,7 @@ trait PdoExecutionTrait
         // it is asked, and its release() clears the reference below — so
         // this probes a live object, never one whose connection has
         // already been handed back.
-        if ($this->owningTransaction?->isActive() !== true) {
+        if ($this->heldTransaction()?->isActive() !== true) {
             return;
         }
 
@@ -228,6 +251,19 @@ trait PdoExecutionTrait
             . 'on it would run inside that transaction. Run the work through the transaction until it '
             . 'commits or rolls back.',
         );
+    }
+
+    /**
+     * The transaction holding this client's connection, while one is
+     * alive to hold it. A transaction that has been destroyed released
+     * the connection on its way out and cleared the reference with it,
+     * so this reads null through the property rather than through a
+     * cleared weak reference — and either way, a client whose
+     * connection is gone has no transaction on it.
+     */
+    private function heldTransaction(): ?SqlTransaction
+    {
+        return $this->owningTransaction?->get();
     }
 
     private function statementCache(): PdoStatementCache

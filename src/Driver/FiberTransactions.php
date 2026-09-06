@@ -22,7 +22,7 @@ use Kinetis\Persistence\Exception\TransactionException;
  *
  * Owners are held by identity, never by object id: Fiber objects are
  * reused (`Kinetis\Async\FiberPool`), and an id could be recycled while
- * an abandoned transaction still has an entry here.
+ * the transaction that recorded it still has an entry here.
  *
  * @internal
  */

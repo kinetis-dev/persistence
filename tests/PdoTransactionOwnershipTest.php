@@ -15,6 +15,7 @@ use PDO;
 use PHPUnit\Framework\TestCase;
 use ReflectionObject;
 use Throwable;
+use WeakReference;
 
 /**
  * A PDO client is one connection, so a transaction owns the whole client
@@ -130,6 +131,71 @@ final class PdoTransactionOwnershipTest extends TestCase
         self::assertTrue($this->client->isClosed());
         $this->expectException(ConnectionException::class);
         $this->client->query('SELECT 1');
+    }
+
+    /**
+     * A transaction begun directly on the client and dropped without
+     * commit(), rollback() or close(). The client is not what keeps it
+     * alive, so the last reference going away destroys it, and that is
+     * where it gives the connection up: nothing can be sent from there,
+     * so the connection is discarded — which for a client holding one
+     * and never reopening it means closing the client, with the server
+     * rolling the work back as the session goes.
+     *
+     * Holding it instead would keep that session, and the locks the
+     * abandoned transaction is sitting on, for the rest of the client's
+     * life. `DB_DRIVER=auto` picks PDO under boot-and-die, where that
+     * life ends with the request; an application that asks for PDO
+     * explicitly keeps the client for whatever lifetime it configures.
+     * Releasing hands the session back to the server, and the client
+     * stays closed — it holds one connection and never reopens it.
+     */
+    public function test_dropping_an_abandoned_transaction_discards_the_connection(): void
+    {
+        $transaction = $this->client->beginTransaction();
+        $transaction->execute('INSERT INTO items (name) VALUES (?)', ['a']);
+        $cache = self::cacheOf($this->client);
+        $probe = WeakReference::create($transaction);
+
+        unset($transaction);
+
+        self::assertNull($probe->get());
+        self::assertTrue($this->client->isClosed());
+        self::assertSame([], self::entriesOf($cache));
+
+        try {
+            $this->client->query('SELECT 1');
+            self::fail('Expected the closed client to refuse the statement.');
+        } catch (ConnectionException $e) {
+            self::assertStringContainsString('closed', $e->getMessage());
+        }
+    }
+
+    /**
+     * The control, and what the weak reference above is for: ownership
+     * stands for as long as anything else holds the transaction, so
+     * nothing is given up early. A client holding its own transaction
+     * would be that holder for its whole life, and the root link would
+     * never be usable again.
+     */
+    public function test_a_transaction_something_else_still_holds_keeps_the_client(): void
+    {
+        $transaction = $this->client->beginTransaction();
+        $held = [$transaction];
+        unset($transaction);
+
+        self::assertFalse($this->client->isClosed());
+
+        try {
+            $this->client->query('SELECT 1');
+            self::fail('Expected the root link to be refused.');
+        } catch (TransactionException $e) {
+            self::assertStringContainsString('This client has an open transaction', $e->getMessage());
+        }
+
+        $held[0]->rollback();
+
+        self::assertSame(0, $this->client->query('SELECT COUNT(*) AS c FROM items')->fetchRow()['c']);
     }
 
     /**

@@ -17,6 +17,12 @@ namespace Kinetis\Persistence\Contract;
  * it ends the transaction and discards the connection rather than
  * sending a concurrent ROLLBACK.
  *
+ * A transaction that reaches none of the three ends when its last
+ * reference goes away: the connection is discarded, not rolled back on
+ * the wire, and the outcome is recorded as unknown. That is a safety
+ * net for a connection, not a way to end a transaction — the work is
+ * discarded with the session and nothing acknowledged it.
+ *
  * rollback() on a transaction that has already ended is a no-op;
  * commit() throws. A COMMIT or ROLLBACK the server refuses throws and
  * discards the connection: what is left on it is a transaction of

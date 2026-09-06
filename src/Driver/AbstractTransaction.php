@@ -42,11 +42,13 @@ use Throwable;
  *
  * Settling happens exactly once. Every way out reaches it: commit,
  * rollback, close, losing the connection mid-statement, a failure that
- * takes the connection with it, and the server ending the transaction
- * underneath the object, which each driver notices from its own local
- * state after every statement and before the next one. A foreign close()
- * landing on a finish already in flight settles it there, and the owner
- * resuming with the connection gone settles nothing a second time.
+ * takes the connection with it, the server ending the transaction
+ * underneath the object — which each driver notices from its own local
+ * state after every statement and before the next one — and the last
+ * reference to a transaction nothing ever ended going away
+ * ({@see __destruct()}). A foreign close() landing on a finish already
+ * in flight settles it there, and the owner resuming with the connection
+ * gone settles nothing a second time.
  *
  * The outcome recorded on the span is the truth and nothing softer:
  * `commit` only for a COMMIT the server acknowledged, `rollback` only
@@ -234,6 +236,52 @@ abstract class AbstractTransaction implements SqlTransaction
     public function isClosed(): bool
     {
         return !$this->isActive();
+    }
+
+    /**
+     * The last reference to a transaction that never ended going away —
+     * one begun straight off a {@see \Kinetis\Persistence\Contract\SqlLink}
+     * rather than through `TransactionGuard`, and dropped on an
+     * exception path with no commit(), rollback() or close() ever
+     * reaching it. Nothing else is going to end it: the drivers hold a
+     * transaction's owner Fiber, never the transaction.
+     *
+     * It ends here, and its connection is discarded — taken out of
+     * service, replaced by the pool, with the server rolling the work
+     * back as the session goes. Nothing is sent: a destructor cannot
+     * suspend, so it cannot wait for a server's answer, and a ROLLBACK
+     * dispatched with nobody to read the reply would leave a statement
+     * on a connection about to serve someone else. The outcome is
+     * `unknown` for the same reason the discard is — no COMMIT or
+     * ROLLBACK was acknowledged, and a transaction discarded with its
+     * session is not a rollback the server reported.
+     *
+     * A statement of this transaction's own is never in flight here: a
+     * dispatch or a finish holds $this on the running Fiber's stack, so
+     * a transaction with one outstanding still has a reference and is
+     * not being destroyed. What reaches this with a finish already sent
+     * is a Fiber destroyed while suspended on it, and that settles the
+     * same way.
+     *
+     * A failure is contained rather than propagated. The last reference
+     * can go away anywhere — inside unrelated code, or during shutdown
+     * where a driver's handles are already gone — and there is no caller
+     * to act on a release that failed. The span is closed either way,
+     * and the connection is out of the driver's hands whatever happened
+     * to it.
+     */
+    public function __destruct()
+    {
+        if ($this->settled) {
+            return;
+        }
+
+        $this->active = false;
+
+        try {
+            $this->settle(discard: true, outcome: 'unknown');
+        } catch (Throwable) {
+        }
     }
 
     /** Executes complete SQL text on the pinned connection. */

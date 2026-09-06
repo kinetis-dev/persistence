@@ -15,8 +15,13 @@ use Throwable;
  * themselves handle connection pooling and dead-connection recycling;
  * what no driver can know about is Kinetis's `RequestScope`: if
  * application code begins a transaction and something throws before it
- * commits or rolls back, nothing closes it, and it leaks into whatever
- * that pooled connection is used for next.
+ * commits or rolls back, nothing ends it, and it holds its connection —
+ * and the locks on it — for as long as anything still references it.
+ * A transaction dropped without ever reaching the guard ends the only
+ * way a destructor can, discarding its connection with the outcome
+ * unknown ({@see Driver\AbstractTransaction::__destruct()}); running the
+ * work through the guard is what ends it on the wire and hands the
+ * connection back.
  *
  * `TransactionGuard` is request-scoped — autowired fresh per
  * `RequestScope` like any other unregistered class — and tracks every
