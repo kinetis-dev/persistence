@@ -96,6 +96,21 @@ abstract class DriverCase extends TestCase
         ];
     }
 
+    /**
+     * The server's own id for the session $db is running on —
+     * CONNECTION_ID() on MySQL, pg_backend_pid() on Postgres. It is what
+     * makes "the same connection" and "a different one" the server's
+     * answer rather than the client's claim.
+     */
+    protected static function serverSessionId(string $driver, SqlLink $db): int
+    {
+        $sql = self::isMysql($driver) ? 'SELECT CONNECTION_ID() AS id' : 'SELECT pg_backend_pid() AS id';
+        $row = $db->query($sql)->fetchRow();
+        self::assertIsArray($row);
+
+        return (int) $row['id'];
+    }
+
     protected static function isMysql(string $driver): bool
     {
         return \str_contains($driver, 'mysql');

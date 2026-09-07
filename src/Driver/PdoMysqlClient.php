@@ -26,11 +26,12 @@ use PDOStatement;
  * still produce correct results — the queries simply run sequentially,
  * which for sub-millisecond queries is the faster trade.
  *
- * The single lazily-opened connection lives for the client's lifetime
- * and is never reopened — matching the boot-and-die FPM model this
- * driver targets, where the process (and client) die with the request.
- * A long-lived process needing reconnection should run the {@see MysqliAsyncClient}
- * driver instead, whose pool discards and replaces dead connections.
+ * The connection is opened lazily and there is only ever one of it:
+ * this client does not pool, so overlapping work is what the
+ * {@see MysqliAsyncClient} driver is for. A session that can carry no
+ * more work is handed back to the server and replaced on the next call
+ * ({@see PdoExecutionTrait::discardSession()}); `close()` is the one
+ * ending that is final.
  */
 final class PdoMysqlClient implements MysqlLink, PrefersPreparedStatements
 {
@@ -95,10 +96,9 @@ final class PdoMysqlClient implements MysqlLink, PrefersPreparedStatements
      * Reads past the first result set and closes the cursor, answering
      * whether there was more than one. A result set left unread fails
      * every later statement on the connection with "cannot execute
-     * queries while other unbuffered queries are active", and this
-     * client never reopens the one connection it has. PDO is blocking
-     * anyway, so the rest is read here rather than the connection
-     * discarded.
+     * queries while other unbuffered queries are active". PDO is
+     * blocking anyway, so the rest is read here rather than paid for
+     * with a discarded session and a fresh connection.
      *
      * A later result set can carry the server's own error — what a
      * procedure raising SIGNAL after a SELECT produces — which is a
@@ -127,20 +127,21 @@ final class PdoMysqlClient implements MysqlLink, PrefersPreparedStatements
     }
 
     /**
-     * Closing the cursor is what establishes the connection is clean for
+     * Closing the cursor is what establishes the session is clean for
      * the next statement. Where even that fails, nothing about the
-     * protocol state is established, so the one connection this client
-     * has is dropped rather than handed on.
+     * protocol state is established, so the session is given up rather
+     * than carrying anything further; the caller's next call runs on a
+     * fresh one.
      */
     private function closeCursor(PDOStatement $statement): void
     {
         try {
             $statement->closeCursor();
         } catch (PDOException $e) {
-            $this->dropConnection();
+            $this->discardSession();
 
             throw new ConnectionException(
-                'The MySQL connection cannot be reused: its result state could not be cleared: ' . $e->getMessage(),
+                'The MySQL connection was discarded: its result state could not be cleared: ' . $e->getMessage(),
                 0,
                 $e,
             );

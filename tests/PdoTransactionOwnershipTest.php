@@ -8,7 +8,9 @@ use Closure;
 use Fiber;
 use Kinetis\Persistence\Driver\PdoStatementCache;
 use Kinetis\Persistence\Exception\ConnectionException;
+use Kinetis\Persistence\Exception\QueryException;
 use Kinetis\Persistence\Exception\TransactionException;
+use Kinetis\Persistence\Tests\Fixtures\DeadlockingPdo;
 use Kinetis\Persistence\Tests\Fixtures\FakePdoClient;
 use Kinetis\Persistence\Tests\Fixtures\RollbackRefusingPdo;
 use PDO;
@@ -19,7 +21,8 @@ use WeakReference;
 
 /**
  * A PDO client is one connection, so a transaction owns the whole client
- * while it lasts. Proven against an in-memory SQLite connection through
+ * while it lasts — and the client outlives any one session it holds.
+ * Proven against in-memory SQLite connections through
  * {@see FakePdoClient}, which runs the same PdoExecutionTrait both real
  * PDO clients do.
  */
@@ -35,10 +38,10 @@ final class PdoTransactionOwnershipTest extends TestCase
             self::markTestSkipped('ext-pdo_sqlite provides the connection this test runs PdoExecutionTrait against.');
         }
 
-        $this->pdo = new PDO('sqlite::memory:', options: [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
-        $this->pdo->exec('CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)');
-
-        $this->client = new FakePdoClient($this->pdo);
+        $this->client = FakePdoClient::overSqlite();
+        // The session the client itself is on, which is what the tests
+        // below reach around it to break.
+        $this->pdo = $this->client->session();
     }
 
     public function test_the_root_link_is_refused_while_a_transaction_is_open(): void
@@ -114,43 +117,119 @@ final class PdoTransactionOwnershipTest extends TestCase
 
     /**
      * Closing from another Fiber cannot put a ROLLBACK on a connection
-     * the owner may be using, so it discards the connection instead —
-     * which for a PDO client, holding one and never reopening it, means
-     * closing the client. The server rolls the work back with the
-     * session.
+     * the owner may be using, so it hands the session back to the
+     * server instead, which rolls the work back as the session goes.
+     * The client keeps none of it: the next call opens a fresh session
+     * and serves the caller on that.
      */
-    public function test_a_foreign_close_discards_the_connection(): void
+    public function test_a_foreign_close_discards_the_session_and_the_client_opens_a_fresh_one(): void
     {
         $transaction = $this->client->beginTransaction();
         $transaction->execute('INSERT INTO items (name) VALUES (?)', ['a']);
 
-        $fiber = new Fiber(static fn () => $transaction->close());
-        $fiber->start();
+        new Fiber(static fn () => $transaction->close())->start();
 
         self::assertFalse($transaction->isActive());
-        self::assertTrue($this->client->isClosed());
-        $this->expectException(ConnectionException::class);
+        self::assertFalse($this->client->isClosed());
+
+        $replacement = $this->client->session();
+        self::assertNotSame($this->pdo, $replacement);
+        self::assertSame(0, $this->client->query('SELECT COUNT(*) AS c FROM items')->fetchRow()['c']);
+    }
+
+    /**
+     * A transaction is over wherever its session went. Losing the
+     * session is a terminal transition like any other, so the object
+     * stays ended and refuses statements even though the client behind
+     * it has moved on to a new one.
+     */
+    public function test_a_transaction_whose_session_was_discarded_stays_ended(): void
+    {
+        $transaction = $this->client->beginTransaction();
+
+        new Fiber(static fn () => $transaction->close())->start();
         $this->client->query('SELECT 1');
+
+        self::assertFalse($transaction->isActive());
+        self::assertTrue($transaction->isClosed());
+
+        try {
+            $transaction->execute('INSERT INTO items (name) VALUES (?)', ['a']);
+            self::fail('Expected the ended transaction to refuse the statement.');
+        } catch (TransactionException $e) {
+            self::assertStringContainsString('no longer open', $e->getMessage());
+        }
+
+        $transaction->close();
+        self::assertFalse($this->client->isClosed());
+    }
+
+    /**
+     * close() is the one ending a client does not come back from. A
+     * session discarded first changes nothing about that: the flag it
+     * sets is close()'s alone.
+     */
+    public function test_close_stays_final_after_a_session_has_been_discarded(): void
+    {
+        $transaction = $this->client->beginTransaction();
+        new Fiber(static fn () => $transaction->close())->start();
+        $this->client->query('SELECT 1');
+
+        $this->client->close();
+
+        self::assertTrue($this->client->isClosed());
+
+        foreach ([
+            fn () => $this->client->query('SELECT 1'),
+            fn () => $this->client->execute('INSERT INTO items (name) VALUES (?)', ['a']),
+            fn () => $this->client->beginTransaction(),
+        ] as $call) {
+            try {
+                $call();
+                self::fail('Expected the closed client to refuse the call.');
+            } catch (ConnectionException $e) {
+                self::assertStringContainsString('closed', $e->getMessage());
+            }
+        }
+    }
+
+    /**
+     * The statements the old session's memo held were prepared on that
+     * session, so the replacement gets a memo of its own rather than
+     * inheriting handles the server has already discarded.
+     */
+    public function test_a_replacement_session_gets_its_own_statement_memo(): void
+    {
+        $this->client->execute('INSERT INTO items (name) VALUES (?)', ['a']);
+        $first = self::cacheOf($this->client);
+
+        $transaction = $this->client->beginTransaction();
+        new Fiber(static fn () => $transaction->close())->start();
+
+        self::assertSame([], self::entriesOf($first));
+
+        $this->client->execute('INSERT INTO items (name) VALUES (?)', ['b']);
+
+        self::assertNotSame($first, self::cacheOf($this->client));
+        self::assertCount(1, self::statementMemoOf($this->client));
     }
 
     /**
      * A transaction begun directly on the client and dropped without
      * commit(), rollback() or close(). The client is not what keeps it
      * alive, so the last reference going away destroys it, and that is
-     * where it gives the connection up: nothing can be sent from there,
-     * so the connection is discarded — which for a client holding one
-     * and never reopening it means closing the client, with the server
-     * rolling the work back as the session goes.
+     * where it gives the session up: nothing can be sent from there, so
+     * the session goes back to the server, which rolls the work back
+     * with it.
      *
      * Holding it instead would keep that session, and the locks the
      * abandoned transaction is sitting on, for the rest of the client's
-     * life. `DB_DRIVER=auto` picks PDO under boot-and-die, where that
-     * life ends with the request; an application that asks for PDO
-     * explicitly keeps the client for whatever lifetime it configures.
-     * Releasing hands the session back to the server, and the client
-     * stays closed — it holds one connection and never reopens it.
+     * life. `DB_DRIVER=auto` picks PDO for every process that is not a
+     * persistent worker, a queue worker included, so that life can be
+     * far longer than one request — which is why what the client is
+     * left with is a fresh session rather than no session at all.
      */
-    public function test_dropping_an_abandoned_transaction_discards_the_connection(): void
+    public function test_dropping_an_abandoned_transaction_replaces_the_session(): void
     {
         $transaction = $this->client->beginTransaction();
         $transaction->execute('INSERT INTO items (name) VALUES (?)', ['a']);
@@ -160,15 +239,11 @@ final class PdoTransactionOwnershipTest extends TestCase
         unset($transaction);
 
         self::assertNull($probe->get());
-        self::assertTrue($this->client->isClosed());
         self::assertSame([], self::entriesOf($cache));
+        self::assertFalse($this->client->isClosed());
 
-        try {
-            $this->client->query('SELECT 1');
-            self::fail('Expected the closed client to refuse the statement.');
-        } catch (ConnectionException $e) {
-            self::assertStringContainsString('closed', $e->getMessage());
-        }
+        self::assertNotSame($this->pdo, $this->client->session());
+        self::assertSame(0, $this->client->query('SELECT COUNT(*) AS c FROM items')->fetchRow()['c']);
     }
 
     /**
@@ -247,9 +322,44 @@ final class PdoTransactionOwnershipTest extends TestCase
 
         new Fiber(static fn () => $transaction->close())->start();
 
-        self::assertTrue($this->client->isClosed());
         self::assertSame([], self::entriesOf($cache));
         self::assertSame([], self::connectionReferencesOf($transaction));
+    }
+
+    /**
+     * A lock-wait timeout or a deadlock ends the transaction and takes
+     * its session with it — the conservative policy
+     * {@see \Kinetis\Persistence\Driver\MysqlLockFailure} states, since
+     * the status flag MySQL sent with the last packet is not proof the
+     * server kept the work. What the caller is left with is a client on
+     * a fresh session, not a client that has to be rebuilt: a queue
+     * worker's next job runs normally.
+     */
+    public function test_a_terminal_lock_failure_discards_the_session_and_leaves_the_client_usable(): void
+    {
+        $client = new FakePdoClient(static function (): PDO {
+            $pdo = new DeadlockingPdo('sqlite::memory:', options: [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+            $pdo->exec('CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)');
+
+            return $pdo;
+        });
+        $first = $client->session();
+        $transaction = $client->beginTransaction();
+        $transaction->execute('INSERT INTO items (name) VALUES (?)', ['a']);
+
+        try {
+            $transaction->query(DeadlockingPdo::DEADLOCK_SQL);
+            self::fail('Expected the deadlock to reach the caller.');
+        } catch (QueryException $e) {
+            self::assertSame(DeadlockingPdo::DEADLOCK_CODE, $e->getCode());
+        }
+
+        self::assertFalse($transaction->isActive());
+        self::assertFalse($client->isClosed());
+        self::assertNotSame($first, $client->session());
+
+        $client->execute('INSERT INTO items (name) VALUES (?)', ['b']);
+        self::assertSame(1, $client->query('SELECT COUNT(*) AS c FROM items')->fetchRow()['c']);
     }
 
     /**
@@ -289,9 +399,12 @@ final class PdoTransactionOwnershipTest extends TestCase
      */
     public function test_a_refused_rollback_still_drops_the_connection(): void
     {
-        $pdo = new RollbackRefusingPdo('sqlite::memory:', options: [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
-        $pdo->exec('CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)');
-        $client = new FakePdoClient($pdo);
+        $client = new FakePdoClient(static function (): PDO {
+            $pdo = new RollbackRefusingPdo('sqlite::memory:', options: [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+            $pdo->exec('CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)');
+
+            return $pdo;
+        });
         $transaction = $client->beginTransaction();
         $transaction->execute('INSERT INTO items (name) VALUES (?)', ['a']);
 

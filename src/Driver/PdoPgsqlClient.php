@@ -24,11 +24,12 @@ use PDOStatement;
  * directly to libpq keys, quoted the way libpq expects
  * ({@see LibpqValue}).
  *
- * The single lazily-opened connection lives for the client's lifetime
- * and is never reopened — matching the boot-and-die FPM model this
- * driver targets, where the process (and client) die with the request.
- * A long-lived process needing reconnection should run the {@see PgsqlAsyncClient}
- * driver instead, whose pool discards and replaces dead connections.
+ * The connection is opened lazily and there is only ever one of it:
+ * this client does not pool, so overlapping work is what the
+ * {@see PgsqlAsyncClient} driver is for. A session that can carry no
+ * more work is handed back to the server and replaced on the next call
+ * ({@see PdoExecutionTrait::discardSession()}); `close()` is the one
+ * ending that is final.
  */
 final class PdoPgsqlClient implements PostgresLink, PrefersPreparedStatements
 {

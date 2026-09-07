@@ -14,8 +14,10 @@ use PHPUnit\Framework\Attributes\DataProvider;
 
 /**
  * The stale-connection policy against a killed server session — the
- * async drivers only, since the PDO drivers hold a single lazy
- * connection with no retry policy by design.
+ * async drivers only, since retrying a statement means moving it to
+ * another connection and only a pool has one. What a PDO client does
+ * with a session it can no longer use is
+ * {@see PdoSessionLifecycleTest}.
  *
  * maxConnections: 1 makes the sequence deterministic: the pool can only
  * ever hand back the one connection whose server side was killed, so
@@ -152,15 +154,6 @@ final class StaleConnectionRetryTest extends DriverCase
 
         $db->close();
         $admin->close();
-    }
-
-    private static function serverSessionId(string $driver, SqlLink $db): int
-    {
-        $sql = self::isMysql($driver) ? 'SELECT CONNECTION_ID() AS id' : 'SELECT pg_backend_pid() AS id';
-        $row = $db->query($sql)->fetchRow();
-        self::assertIsArray($row);
-
-        return (int) $row['id'];
     }
 
     private static function killServerSession(string $driver, SqlLink $admin, int $id): void

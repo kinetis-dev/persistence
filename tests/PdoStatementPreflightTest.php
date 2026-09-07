@@ -135,9 +135,8 @@ final class PdoStatementPreflightTest extends TestCase
     private function client(PDO $pdo): PdoMysqlClient
     {
         $client = new PdoMysqlClient('localhost', 'user', 'password', 'db');
-        // The client opens its own connection lazily and never reopens
-        // it, so seating the handle is all it takes to reach execute()
-        // without a server.
+        // The client opens its connection lazily, so seating the handle
+        // is all it takes to reach execute() without a server.
         new ReflectionProperty(PdoMysqlClient::class, 'pdo')->setValue($client, $pdo);
 
         return $client;

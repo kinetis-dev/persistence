@@ -18,21 +18,48 @@ use PDOStatement;
 
 /**
  * A client running {@see PdoExecutionTrait} — the shared body both PDO
- * clients are — against an in-memory SQLite connection, so the rule the
+ * clients are — against in-memory SQLite connections, so the rules the
  * trait owns can be proven without a MySQL or Postgres server: while a
- * transaction holds the one connection, the root link refuses every
- * statement, and it works again once that transaction ends.
+ * transaction holds the session, the root link refuses every statement;
+ * a discarded session is replaced on the next call; and `close()` is
+ * final.
  *
  * SQLite is the connection, not the subject. PDO's own transaction state
  * (beginTransaction/commit/rollBack/inTransaction) is what the trait and
  * {@see PdoTransaction} read, and it behaves the same on every PDO
  * driver.
+ *
+ * $open stands in for the real clients' DSN and attributes: it is called
+ * once per session, so a replacement session is a distinct PDO handle
+ * over a distinct database — which is also what "the work went with the
+ * discarded session" looks like here.
  */
 final class FakePdoClient implements MysqlLink
 {
     use PdoExecutionTrait;
 
-    public function __construct(private readonly PDO $handle) {}
+    /** @param Closure(): PDO $open */
+    public function __construct(private readonly Closure $open) {}
+
+    /**
+     * A client over a fresh in-memory database per session, each with
+     * the `items` table the ownership tests write to.
+     */
+    public static function overSqlite(): self
+    {
+        return new self(static function (): PDO {
+            $pdo = new PDO('sqlite::memory:', options: [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
+            $pdo->exec('CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)');
+
+            return $pdo;
+        });
+    }
+
+    /** The handle this client is on right now, opening one if it has none. */
+    public function session(): PDO
+    {
+        return $this->connection();
+    }
 
     #[\Override]
     public function beginTransaction(): MysqlTransaction
@@ -64,6 +91,6 @@ final class FakePdoClient implements MysqlLink
             throw new ConnectionException('The client has been closed');
         }
 
-        return $this->handle;
+        return $this->pdo ??= ($this->open)();
     }
 }

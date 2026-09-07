@@ -36,6 +36,15 @@ use WeakReference;
  * holding a single connection has, since the alternative is holding
  * that session and its locks until the client itself goes.
  *
+ * A client outlives its connection. {@see close()} ends the client
+ * itself, once and for good. Discarding the physical session
+ * ({@see discardSession()}) is the separate thing that happens when a
+ * session cannot carry work any further: it goes back to the server,
+ * and the next root-link call opens a fresh one exactly as the first
+ * was opened. That is what keeps a client usable in a process outliving
+ * one session — a queue worker under `DB_DRIVER=auto`, where PDO is the
+ * driver a long-running CLI gets.
+ *
  * @internal
  *
  * @phpstan-require-implements \Kinetis\Persistence\Contract\SqlLink
@@ -50,8 +59,13 @@ trait PdoExecutionTrait
      * The pre-flight every execute() passes before this client does
      * anything at all, and the statements memoized per SQL string for
      * this connection's lifetime. Both are built on first use rather
-     * than in a constructor, which a trait has none of, and dropped by
-     * close() with the connection.
+     * than in a constructor, which a trait has none of.
+     *
+     * Only the memo is bound to the session: a prepared statement lives
+     * on the connection it was prepared on, so it goes when that
+     * connection does. The pre-flight's own memo is a pure function of
+     * the SQL text and the dialect ({@see SqlParamPreflight}), so it
+     * survives a discarded session and is worth keeping across one.
      */
     private ?SqlParamPreflight $preflight = null;
 
@@ -120,6 +134,10 @@ trait PdoExecutionTrait
         });
     }
 
+    /**
+     * Ends the client itself — idempotent, and the one ending it does
+     * not come back from.
+     */
     public function close(): void
     {
         if ($this->closed) {
@@ -138,7 +156,7 @@ trait PdoExecutionTrait
         try {
             $transaction?->close();
         } finally {
-            $this->dropConnection();
+            $this->discardSession();
         }
     }
 
@@ -183,15 +201,19 @@ trait PdoExecutionTrait
     }
 
     /**
-     * Drops the one connection this client has, and everything built on
-     * it. The memo is emptied rather than only dereferenced: anything
-     * still holding it would otherwise keep prepared statements alive,
-     * and with them the session the server is waiting to discard.
+     * Hands this client's physical session back to the server, with
+     * everything prepared on it. The memo is emptied rather than only
+     * dereferenced: anything still holding it would otherwise keep
+     * prepared statements alive, and with them the session the server
+     * is waiting to discard.
+     *
+     * The client stays open. This is how a session that can carry no
+     * more work — abandoned by a transaction, ended by a terminal lock
+     * failure, left in a result state that could not be cleared — is
+     * given up, and the next root-link call opens a fresh one.
      */
-    private function dropConnection(): void
+    private function discardSession(): void
     {
-        $this->closed = true;
-        $this->preflight = null;
         $this->statements?->clear();
         $this->statements = null;
         $this->pdo = null;
@@ -224,10 +246,11 @@ trait PdoExecutionTrait
 
                 if ($discard) {
                     // A transaction ended without rolling back on the
-                    // wire. This client has one connection and never
-                    // reopens it, so dropping it is what hands the work
-                    // back to the server to discard with the session.
-                    $this->dropConnection();
+                    // wire, so giving the session up is what hands the
+                    // work back to the server to discard with it. The
+                    // client opens a fresh session for whatever runs
+                    // next.
+                    $this->discardSession();
                 }
             },
         );
