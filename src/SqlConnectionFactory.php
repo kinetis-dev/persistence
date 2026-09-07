@@ -22,14 +22,17 @@ use Kinetis\Persistence\Driver\PgsqlAsyncClient;
  * Driver selection (`DB_DRIVER`, connection-scoped like every other
  * DB_* key):
  *
- * - `auto` (the default): a persistent runtime (FrankenPHP worker mode,
- *   or RoadRunner) gets the native async driver; a boot-and-die runtime
- *   (PHP-FPM) gets PDO. This split is measured, not aesthetic: under
- *   boot-and-die, per-request handshakes and per-query client CPU
- *   dominate, and an async client's overlap buys nothing a blocking
- *   driver doesn't already deliver — while a persistent worker amortizes
- *   connections across requests and gets the whole of native async
- *   fan-out.
+ * - `auto` (the default): the native async driver when
+ *   `frankenphp_handle_request()` exists (FrankenPHP worker mode) or
+ *   `RR_MODE=http` (RoadRunner), PDO everywhere else — PHP-FPM and AWS
+ *   Lambda included (see docs/persistence.md for what Lambda needs
+ *   before `native` is the right choice there). Native is the measured
+ *   default for the supported persistent-worker targets, FrankenPHP and
+ *   RoadRunner; PDO is the baseline everywhere else because it is the
+ *   commonly installed and default-enabled driver. Lambda stays an
+ *   explicit opt-in: the deployment has to ship the native extension and
+ *   budget a pool per execution environment, and there is no Lambda
+ *   measurement here to justify choosing native for it automatically.
  * - `native`: mysqli's MYSQLI_ASYNC ({@see MysqliAsyncClient}) or
  *   ext-pgsql's pg_send_query ({@see PgsqlAsyncClient}). C-speed wire
  *   protocol, Fiber-suspending, `concurrently()`-compatible. The
@@ -118,7 +121,7 @@ final class SqlConnectionFactory
         $driver ??= $config->string(Config::scopedKey('DB_DRIVER', $connection), 'auto');
 
         if ($driver === 'auto') {
-            $driver = self::runningUnderPersistentWorker() ? 'native' : 'pdo';
+            $driver = self::shouldUseNativeDriverByDefault() ? 'native' : 'pdo';
         }
 
         if ($driver !== 'native' && $driver !== 'pdo') {
@@ -201,16 +204,21 @@ final class SqlConnectionFactory
     }
 
     /**
-     * The same two signals `Kinetis\Runtime\RuntimeDetector::detect()`
-     * uses to pick `FrankenPhpAdapter`/`RoadRunnerAdapter`, checked
-     * directly rather than routed through the full detector: this only
-     * needs a yes/no answer, not a constructed adapter, and going
-     * through `detect()` would risk instantiating `BrefLambdaAdapter`
-     * (throwing if `kinetis/bref-adapter` isn't installed) purely
-     * because `AWS_LAMBDA_RUNTIME_API` happened to be set for an
-     * unrelated reason.
+     * The whole of `DB_DRIVER=auto`: `native` when
+     * `frankenphp_handle_request()` exists or `RR_MODE=http` is set,
+     * `pdo` for every other runtime. Those two signals are the entire
+     * rule — no other environment selects `native` by default, however
+     * long its PHP process lives. AWS Lambda gets `pdo` here; a
+     * deployment wanting otherwise sets `DB_DRIVER=native` explicitly.
+     *
+     * Both signals are read here rather than through
+     * `Kinetis\Runtime\RuntimeDetector::detect()`, which answers the
+     * separate question of which adapter drives the request loop: going
+     * through it would risk instantiating `BrefLambdaAdapter` (throwing
+     * if `kinetis/bref-adapter` isn't installed) purely because
+     * `AWS_LAMBDA_RUNTIME_API` happened to be set.
      */
-    private static function runningUnderPersistentWorker(): bool
+    private static function shouldUseNativeDriverByDefault(): bool
     {
         return \function_exists('frankenphp_handle_request') || \getenv('RR_MODE') === 'http';
     }

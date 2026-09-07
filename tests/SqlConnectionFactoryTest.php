@@ -50,6 +50,34 @@ final class SqlConnectionFactoryTest extends TestCase
         }
     }
 
+    public function test_auto_driver_selects_pdo_under_aws_lambda(): void
+    {
+        // AWS_LAMBDA_RUNTIME_API is not one of the two signals 'auto'
+        // reads, so a Lambda invocation gets the PDO client for its
+        // dialect (see docs/persistence.md, "Driver selection").
+        $originalLambda = getenv('AWS_LAMBDA_RUNTIME_API');
+        $originalRoadRunner = getenv('RR_MODE');
+        putenv('AWS_LAMBDA_RUNTIME_API=127.0.0.1:9001');
+        putenv('RR_MODE');
+
+        try {
+            $mysql = new Config([
+                'DB_CONNECTION' => 'mysql',
+                'DB_PASSWORD' => 'secret',
+            ]);
+            $postgres = new Config([
+                'DB_CONNECTION' => 'pgsql',
+                'DB_PASSWORD' => 'secret',
+            ]);
+
+            self::assertInstanceOf(PdoMysqlClient::class, SqlConnectionFactory::fromConfig($mysql));
+            self::assertInstanceOf(PdoPgsqlClient::class, SqlConnectionFactory::fromConfig($postgres));
+        } finally {
+            putenv($originalLambda === false ? 'AWS_LAMBDA_RUNTIME_API' : "AWS_LAMBDA_RUNTIME_API={$originalLambda}");
+            putenv($originalRoadRunner === false ? 'RR_MODE' : "RR_MODE={$originalRoadRunner}");
+        }
+    }
+
     public function test_native_driver_builds_the_mysqli_async_client(): void
     {
         $config = new Config([
