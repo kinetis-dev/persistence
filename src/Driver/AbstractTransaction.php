@@ -69,6 +69,7 @@ abstract class AbstractTransaction implements SqlTransaction
 {
     private const string INTERRUPTED_MESSAGE = 'The connection was taken out of service while this transaction was finishing; whether the server applied it is unknown';
 
+    /** @var Fiber<mixed, mixed, mixed, mixed>|null */
     private readonly ?Fiber $owner;
 
     private bool $active = true;

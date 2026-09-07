@@ -28,10 +28,14 @@ use Kinetis\Persistence\Exception\TransactionException;
  */
 final class FiberTransactions
 {
-    /** @var list<?Fiber> One entry per open transaction; null is the main context. */
+    /** @var list<Fiber<mixed, mixed, mixed, mixed>|null> One entry per open transaction; null is the main context. */
     private array $owners = [];
 
-    /** Records a transaction for the calling Fiber and returns its owner, for {@see close()}. */
+    /**
+     * Records a transaction for the calling Fiber and returns its owner, for {@see close()}.
+     *
+     * @return Fiber<mixed, mixed, mixed, mixed>|null
+     */
     public function open(): ?Fiber
     {
         $owner = Fiber::getCurrent();
@@ -40,14 +44,17 @@ final class FiberTransactions
         return $owner;
     }
 
-    /** Drops one entry for $owner — the Fiber {@see open()} recorded, whichever Fiber ends the transaction. */
+    /**
+     * Drops one entry for $owner — the Fiber {@see open()} recorded, whichever Fiber ends the transaction.
+     *
+     * @param Fiber<mixed, mixed, mixed, mixed>|null $owner
+     */
     public function close(?Fiber $owner): void
     {
         $at = \array_search($owner, $this->owners, true);
 
         if ($at !== false) {
-            unset($this->owners[$at]);
-            $this->owners = \array_values($this->owners);
+            \array_splice($this->owners, $at, 1);
         }
     }
 

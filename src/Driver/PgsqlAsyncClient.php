@@ -850,7 +850,7 @@ final class PgsqlAsyncClient implements PostgresLink
             $connection = $this->establish($id, $handle);
         } catch (Throwable $e) {
             // A dropped entry means close() already took the handle.
-            if (isset($this->opening[$id])) {
+            if (\array_key_exists($id, $this->opening)) {
                 unset($this->opening[$id]);
                 \pg_close($handle);
             }
@@ -888,9 +888,9 @@ final class PgsqlAsyncClient implements PostgresLink
                 throw new ConnectionException('Failed to connect to Postgres');
             }
 
-            $this->awaitHandshake($id, $socket, $status === \PGSQL_POLLING_READING, $deadline);
+            $this->awaitHandshake($id, $handle, $socket, $status === \PGSQL_POLLING_READING, $deadline);
 
-            if (!isset($this->opening[$id])) {
+            if (!\array_key_exists($id, $this->opening)) {
                 throw new ConnectionException(self::CLOSED_MESSAGE);
             }
         }
@@ -930,7 +930,7 @@ final class PgsqlAsyncClient implements PostgresLink
      *
      * @param resource $socket
      */
-    private function awaitHandshake(int $id, mixed $socket, bool $reading, ?float $deadline): void
+    private function awaitHandshake(int $id, Connection $handle, mixed $socket, bool $reading, ?float $deadline): void
     {
         $suspension = EventLoop::getSuspension();
         /** @var list<string> $watchers */
@@ -962,13 +962,13 @@ final class PgsqlAsyncClient implements PostgresLink
             );
         }
 
-        $this->opening[$id][1] = $wake;
+        $this->opening[$id] = [$handle, $wake];
 
         try {
             $suspension->suspend();
         } finally {
-            if (isset($this->opening[$id])) {
-                $this->opening[$id][1] = null;
+            if (\array_key_exists($id, $this->opening)) {
+                $this->opening[$id] = [$handle, null];
             }
         }
     }
