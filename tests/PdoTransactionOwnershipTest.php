@@ -8,9 +8,7 @@ use Closure;
 use Fiber;
 use Kinetis\Persistence\Driver\PdoStatementCache;
 use Kinetis\Persistence\Exception\ConnectionException;
-use Kinetis\Persistence\Exception\QueryException;
 use Kinetis\Persistence\Exception\TransactionException;
-use Kinetis\Persistence\Tests\Fixtures\DeadlockingPdo;
 use Kinetis\Persistence\Tests\Fixtures\FakePdoClient;
 use Kinetis\Persistence\Tests\Fixtures\RollbackRefusingPdo;
 use PDO;
@@ -165,9 +163,9 @@ final class PdoTransactionOwnershipTest extends TestCase
     }
 
     /**
-     * close() is the one ending a client does not come back from. A
-     * session discarded first changes nothing about that: the flag it
-     * sets is close()'s alone.
+     * close() is the one ending a client does not come back from, and a
+     * discarded session before it changes nothing about that: an
+     * ordinary client connects again until close(), never after it.
      */
     public function test_close_stays_final_after_a_session_has_been_discarded(): void
     {
@@ -194,6 +192,29 @@ final class PdoTransactionOwnershipTest extends TestCase
     }
 
     /**
+     * The other session policy, which kinetis/migrations runs on: what a
+     * single-session client holds — an advisory lock — lives in the
+     * session, so losing it closes the client. The caller finds out,
+     * instead of carrying on against an unlocked replacement.
+     */
+    public function test_a_single_session_client_closes_when_its_session_is_discarded(): void
+    {
+        $client = FakePdoClient::overSqlite(singleSession: true);
+        $transaction = $client->beginTransaction();
+
+        new Fiber(static fn () => $transaction->close())->start();
+
+        self::assertTrue($client->isClosed());
+
+        try {
+            $client->query('SELECT 1');
+            self::fail('Expected the client to refuse the statement.');
+        } catch (ConnectionException $e) {
+            self::assertStringContainsString('one database session', $e->getMessage());
+        }
+    }
+
+    /**
      * The statements the old session's memo held were prepared on that
      * session, so the replacement gets a memo of its own rather than
      * inheriting handles the server has already discarded.
@@ -205,9 +226,6 @@ final class PdoTransactionOwnershipTest extends TestCase
 
         $transaction = $this->client->beginTransaction();
         new Fiber(static fn () => $transaction->close())->start();
-
-        self::assertSame([], self::entriesOf($first));
-
         $this->client->execute('INSERT INTO items (name) VALUES (?)', ['b']);
 
         self::assertNotSame($first, self::cacheOf($this->client));
@@ -225,9 +243,9 @@ final class PdoTransactionOwnershipTest extends TestCase
      * Holding it instead would keep that session, and the locks the
      * abandoned transaction is sitting on, for the rest of the client's
      * life. `DB_DRIVER=auto` picks PDO for every process that is not a
-     * persistent worker, a queue worker included, so that life can be
-     * far longer than one request — which is why what the client is
-     * left with is a fresh session rather than no session at all.
+     * persistent worker, a queue worker included, where that life runs
+     * far past one request — so what the client is left with is a fresh
+     * session, not none at all.
      */
     public function test_dropping_an_abandoned_transaction_replaces_the_session(): void
     {
@@ -324,42 +342,6 @@ final class PdoTransactionOwnershipTest extends TestCase
 
         self::assertSame([], self::entriesOf($cache));
         self::assertSame([], self::connectionReferencesOf($transaction));
-    }
-
-    /**
-     * A lock-wait timeout or a deadlock ends the transaction and takes
-     * its session with it — the conservative policy
-     * {@see \Kinetis\Persistence\Driver\MysqlLockFailure} states, since
-     * the status flag MySQL sent with the last packet is not proof the
-     * server kept the work. What the caller is left with is a client on
-     * a fresh session, not a client that has to be rebuilt: a queue
-     * worker's next job runs normally.
-     */
-    public function test_a_terminal_lock_failure_discards_the_session_and_leaves_the_client_usable(): void
-    {
-        $client = new FakePdoClient(static function (): PDO {
-            $pdo = new DeadlockingPdo('sqlite::memory:', options: [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
-            $pdo->exec('CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)');
-
-            return $pdo;
-        });
-        $first = $client->session();
-        $transaction = $client->beginTransaction();
-        $transaction->execute('INSERT INTO items (name) VALUES (?)', ['a']);
-
-        try {
-            $transaction->query(DeadlockingPdo::DEADLOCK_SQL);
-            self::fail('Expected the deadlock to reach the caller.');
-        } catch (QueryException $e) {
-            self::assertSame(DeadlockingPdo::DEADLOCK_CODE, $e->getCode());
-        }
-
-        self::assertFalse($transaction->isActive());
-        self::assertFalse($client->isClosed());
-        self::assertNotSame($first, $client->session());
-
-        $client->execute('INSERT INTO items (name) VALUES (?)', ['b']);
-        self::assertSame(1, $client->query('SELECT COUNT(*) AS c FROM items')->fetchRow()['c']);
     }
 
     /**

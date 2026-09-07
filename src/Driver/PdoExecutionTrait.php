@@ -11,6 +11,7 @@ use Kinetis\Persistence\Contract\MysqlLink;
 use Kinetis\Persistence\Contract\SqlTransaction;
 use Throwable;
 use Kinetis\Persistence\Contract\SqlResult;
+use Kinetis\Persistence\Exception\ConnectionException;
 use Kinetis\Persistence\Exception\QueryException;
 use Kinetis\Persistence\Exception\TransactionException;
 use PDO;
@@ -36,14 +37,15 @@ use WeakReference;
  * holding a single connection has, since the alternative is holding
  * that session and its locks until the client itself goes.
  *
- * A client outlives its connection. {@see close()} ends the client
- * itself, once and for good. Discarding the physical session
- * ({@see discardSession()}) is the separate thing that happens when a
- * session cannot carry work any further: it goes back to the server,
- * and the next root-link call opens a fresh one exactly as the first
- * was opened. That is what keeps a client usable in a process outliving
- * one session — a queue worker under `DB_DRIVER=auto`, where PDO is the
- * driver a long-running CLI gets.
+ * A client and the session it runs on are two different lifetimes.
+ * {@see discardSession()} hands back a session that can carry no more
+ * work; {@see close()} ends the client itself, once and for good. Which
+ * of the two losing a session amounts to is fixed at construction: an
+ * ordinary client opens a fresh session on its next root-link call,
+ * which is what keeps it usable in a process outliving one session — a
+ * queue worker under `DB_DRIVER=auto`, where PDO is the driver a
+ * long-running CLI gets — while a single-session client
+ * ({@see $singleSession}) is closed by it.
  *
  * @internal
  *
@@ -51,9 +53,31 @@ use WeakReference;
  */
 trait PdoExecutionTrait
 {
+    private const string CLOSED_MESSAGE = 'The client has been closed';
+
+    private const string SESSION_LOST_MESSAGE = 'This client runs on one database session and that session was '
+        . 'discarded: whatever it held — an advisory lock, a temporary table — went with it, so no replacement '
+        . 'connection can carry the work on.';
+
     private ?PDO $pdo = null;
 
-    private bool $closed = false;
+    /**
+     * Why this client is out of service, and the message every later
+     * call throws with; null while it is usable. {@see close()} sets it,
+     * and on a single-session client so does losing the session.
+     */
+    private ?string $closedReason = null;
+
+    /**
+     * Whether the session this client opens is the only one it may run
+     * on. The ordinary client (false) replaces a discarded session; a
+     * single-session one is for work that lives in the session itself —
+     * kinetis/migrations holds its advisory lock there — where a
+     * replacement is a different session holding none of it. Fixed at
+     * construction, by
+     * {@see \Kinetis\Persistence\SqlConnectionFactory::singleSession()}.
+     */
+    private bool $singleSession = false;
 
     /**
      * The pre-flight every execute() passes before this client does
@@ -135,16 +159,16 @@ trait PdoExecutionTrait
     }
 
     /**
-     * Ends the client itself — idempotent, and the one ending it does
-     * not come back from.
+     * Takes the client itself out of service — idempotent, and the one
+     * ending it does not come back from.
      */
     public function close(): void
     {
-        if ($this->closed) {
+        if ($this->closedReason !== null) {
             return;
         }
 
-        $this->closed = true;
+        $this->closedReason = self::CLOSED_MESSAGE;
         // The transaction holding this client goes first: it runs on the
         // same handle and the same statement memo, and a PDOStatement
         // keeps its connection open as surely as the handle does. It
@@ -162,7 +186,7 @@ trait PdoExecutionTrait
 
     public function isClosed(): bool
     {
-        return $this->closed;
+        return $this->closedReason !== null;
     }
 
     /**
@@ -207,16 +231,36 @@ trait PdoExecutionTrait
      * prepared statements alive, and with them the session the server
      * is waiting to discard.
      *
-     * The client stays open. This is how a session that can carry no
-     * more work — abandoned by a transaction, ended by a terminal lock
-     * failure, left in a result state that could not be cleared — is
-     * given up, and the next root-link call opens a fresh one.
+     * This is how a session that can carry no more work — abandoned by a
+     * transaction, ended by a terminal lock failure, left in a result
+     * state that could not be cleared — is given up. An ordinary client
+     * stays open and opens a fresh session on its next call; a
+     * single-session one is out of service from here.
      */
     private function discardSession(): void
     {
         $this->statements?->clear();
         $this->statements = null;
         $this->pdo = null;
+
+        if ($this->singleSession) {
+            $this->closedReason ??= self::SESSION_LOST_MESSAGE;
+        }
+    }
+
+    /**
+     * The session this client runs on, opened on first use. A client out
+     * of service refuses here instead of connecting, which is the whole
+     * of the single-session guarantee: one session per client, and no
+     * quiet replacement for it.
+     */
+    private function connection(): PDO
+    {
+        if ($this->closedReason !== null) {
+            throw new ConnectionException($this->closedReason);
+        }
+
+        return $this->pdo ??= $this->openConnection();
     }
 
     /**
@@ -247,9 +291,7 @@ trait PdoExecutionTrait
                 if ($discard) {
                     // A transaction ended without rolling back on the
                     // wire, so giving the session up is what hands the
-                    // work back to the server to discard with it. The
-                    // client opens a fresh session for whatever runs
-                    // next.
+                    // work back to the server to discard with it.
                     $this->discardSession();
                 }
             },
@@ -320,8 +362,12 @@ trait PdoExecutionTrait
         );
     }
 
-    /** Opens (or returns) the one lazily-created PDO connection. */
-    abstract private function connection(): PDO;
+    /**
+     * Opens one connection — the DSN and attributes are the client's
+     * own. Reached only through {@see connection()}, which is what holds
+     * the session policy.
+     */
+    abstract private function openConnection(): PDO;
 
     /** Builds the buffered result — dialects differ on lastInsertId. */
     abstract public function buildResult(PDOStatement $statement): BufferedSqlResult;

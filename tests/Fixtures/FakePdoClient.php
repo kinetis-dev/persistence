@@ -12,7 +12,6 @@ use Kinetis\Persistence\Driver\PdoExecutionTrait;
 use Kinetis\Persistence\Driver\PdoMysqlTransaction;
 use Kinetis\Persistence\Driver\PdoStatementCache;
 use Kinetis\Persistence\Driver\PdoTransaction;
-use Kinetis\Persistence\Exception\ConnectionException;
 use PDO;
 use PDOStatement;
 
@@ -21,8 +20,8 @@ use PDOStatement;
  * clients are — against in-memory SQLite connections, so the rules the
  * trait owns can be proven without a MySQL or Postgres server: while a
  * transaction holds the session, the root link refuses every statement;
- * a discarded session is replaced on the next call; and `close()` is
- * final.
+ * a discarded session is replaced on the next call, or closes the client
+ * where $singleSession forbids a replacement; and `close()` is final.
  *
  * SQLite is the connection, not the subject. PDO's own transaction state
  * (beginTransaction/commit/rollBack/inTransaction) is what the trait and
@@ -39,20 +38,23 @@ final class FakePdoClient implements MysqlLink
     use PdoExecutionTrait;
 
     /** @param Closure(): PDO $open */
-    public function __construct(private readonly Closure $open) {}
+    public function __construct(private readonly Closure $open, bool $singleSession = false)
+    {
+        $this->singleSession = $singleSession;
+    }
 
     /**
      * A client over a fresh in-memory database per session, each with
      * the `items` table the ownership tests write to.
      */
-    public static function overSqlite(): self
+    public static function overSqlite(bool $singleSession = false): self
     {
         return new self(static function (): PDO {
             $pdo = new PDO('sqlite::memory:', options: [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
             $pdo->exec('CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)');
 
             return $pdo;
-        });
+        }, $singleSession);
     }
 
     /** The handle this client is on right now, opening one if it has none. */
@@ -85,12 +87,8 @@ final class FakePdoClient implements MysqlLink
     }
 
     #[\Override]
-    private function connection(): PDO
+    private function openConnection(): PDO
     {
-        if ($this->closed) {
-            throw new ConnectionException('The client has been closed');
-        }
-
-        return $this->pdo ??= ($this->open)();
+        return ($this->open)();
     }
 }

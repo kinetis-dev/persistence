@@ -27,9 +27,9 @@ use PDOStatement;
  * The connection is opened lazily and there is only ever one of it:
  * this client does not pool, so overlapping work is what the
  * {@see PgsqlAsyncClient} driver is for. A session that can carry no
- * more work is handed back to the server and replaced on the next call
- * ({@see PdoExecutionTrait::discardSession()}); `close()` is the one
- * ending that is final.
+ * more work is handed back to the server
+ * ({@see PdoExecutionTrait::discardSession()}) and replaced on the next
+ * call, unless $singleSession pins the client to the first one.
  */
 final class PdoPgsqlClient implements PostgresLink, PrefersPreparedStatements
 {
@@ -44,7 +44,10 @@ final class PdoPgsqlClient implements PostgresLink, PrefersPreparedStatements
         private readonly string $database,
         private readonly int $port = 5432,
         ?ConnectionOptions $options = null,
+        bool $singleSession = false,
     ) {
+        $this->singleSession = $singleSession;
+
         $this->options = $options ?? new ConnectionOptions();
         // Collation and protocol compression are MySQL concepts.
         $this->options->rejectUnsupported('PDO pgsql', ['collation', 'compression']);
@@ -106,22 +109,14 @@ final class PdoPgsqlClient implements PostgresLink, PrefersPreparedStatements
 
     /**
      * Called only from {@see PdoExecutionTrait} (via its own
-     * `abstract private function connection(): PDO;`), never directly
-     * from this class's own body — static analysis that doesn't resolve
-     * trait method calls across the trait boundary will see this as
-     * unused; it isn't.
+     * `abstract private function openConnection(): PDO;`), never
+     * directly from this class's own body — static analysis that doesn't
+     * resolve trait method calls across the trait boundary will see this
+     * as unused; it isn't.
      */
     #[\Override]
-    private function connection(): PDO
+    private function openConnection(): PDO
     {
-        if ($this->closed) {
-            throw new ConnectionException('The client has been closed');
-        }
-
-        if ($this->pdo !== null) {
-            return $this->pdo;
-        }
-
         $quote = LibpqValue::quote(...);
         $dsn = 'pgsql:host=' . $quote($this->host)
             . ';port=' . $this->port
@@ -153,7 +148,7 @@ final class PdoPgsqlClient implements PostgresLink, PrefersPreparedStatements
         }
 
         try {
-            return $this->pdo = new PDO($dsn, $this->user, $this->password, [
+            return new PDO($dsn, $this->user, $this->password, [
                 PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
                 PDO::ATTR_STRINGIFY_FETCHES => false,
             ]);

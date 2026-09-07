@@ -210,12 +210,12 @@ final class TransactionOwnershipTest extends DriverCase
         self::assertNull($caught);
         self::assertFalse($transaction->isActive());
 
-        // The PDO clients hold the one connection the transaction was
-        // discarding, so reading the table back needs a fresh client.
-        $reader = self::makeClient($driver);
-        self::assertSame(0, self::rowCount($reader, 'tx_close'));
-        $reader->query('DROP TABLE tx_close');
-        $reader->close();
+        // The client is off the discarded session either way — a pool
+        // opens a replacement, a PDO client opens one on its next call
+        // — so the read below runs on a session that never saw the
+        // abandoned transaction.
+        self::assertSame(0, self::rowCount($db, 'tx_close'));
+        $db->query('DROP TABLE tx_close');
         $db->close();
     }
 
@@ -428,10 +428,9 @@ final class TransactionOwnershipTest extends DriverCase
      * connection as a deadlock is: `innodb_rollback_on_timeout` decides
      * whether the server rolled back the statement or the whole
      * transaction, and nothing in the error says which. Both drivers
-     * therefore end the transaction and take the connection out of
-     * service — the native pool replaces it, and the single-connection
-     * PDO client closes, which is how each of them hands the work back
-     * to the server to discard with the session.
+     * therefore end the transaction and hand its session back for the
+     * server to discard the work with — the pool opening a replacement,
+     * the PDO client opening one on its next call.
      */
     #[DataProvider('mysqlDrivers')]
     public function test_a_lock_wait_timeout_ends_the_transaction_and_discards_its_connection(string $driver): void
@@ -469,11 +468,7 @@ final class TransactionOwnershipTest extends DriverCase
                 self::assertStringContainsString('no longer open', $e->getMessage());
             }
 
-            if ($driver === 'pdo-mysql') {
-                self::assertTrue($db->isClosed());
-            } else {
-                self::assertNotSame($before, self::mysqlConnectionId($db));
-            }
+            self::assertNotSame($before, self::mysqlConnectionId($db));
         } finally {
             // Whatever the assertions did, the row lock has to go before
             // the DROP below, which would otherwise wait on it.

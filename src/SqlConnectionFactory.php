@@ -49,9 +49,9 @@ use Kinetis\Persistence\Driver\PgsqlAsyncClient;
  * $connection selects a named connection via Config::scopedKey() —
  * 'default' reads the plain DB_* keys; any other name reads DB_{NAME}_*.
  *
- * $driver overrides `DB_DRIVER` for one call — `kinetis/migrations`
- * passes 'pdo' for the session-scoped connection its advisory lock
- * needs.
+ * $driver overrides `DB_DRIVER` for one call. {@see singleSession()}
+ * is the stricter form of the same thing, for a caller whose work lives
+ * in the database session itself.
  *
  * $poolOptions['maxConnections'] caps the async drivers' fan-out width
  * (the PDO drivers are a single connection, trivially within any cap).
@@ -72,6 +72,36 @@ final class SqlConnectionFactory
         string $connection = 'default',
         array $poolOptions = [],
         ?string $driver = null,
+    ): MysqlLink|PostgresLink {
+        return self::build($config, $connection, $poolOptions, $driver, singleSession: false);
+    }
+
+    /**
+     * A client pinned to the first session it opens: PDO whatever
+     * DB_DRIVER says, and closed for good if that session is ever
+     * discarded, rather than reconnecting.
+     *
+     * That is what work living in the session itself needs.
+     * `kinetis/migrations` holds a session-scoped advisory lock for a
+     * whole run, so a replacement session would be an unlocked one the
+     * run kept going on. Everything else wants {@see fromConfig()},
+     * where reconnecting is what keeps a long-lived process working.
+     */
+    public static function singleSession(Config $config, string $connection = 'default'): MysqlLink|PostgresLink
+    {
+        return self::build($config, $connection, [], 'pdo', singleSession: true);
+    }
+
+    /**
+     * @param array<string, mixed> $poolOptions
+     * @param 'auto'|'native'|'pdo'|null $driver
+     */
+    private static function build(
+        Config $config,
+        string $connection,
+        array $poolOptions,
+        ?string $driver,
+        bool $singleSession,
     ): MysqlLink|PostgresLink {
         $host = $config->string(Config::scopedKey('DB_HOST', $connection), '127.0.0.1');
         $database = $config->string(Config::scopedKey('DB_NAME', $connection), 'app');
@@ -124,9 +154,9 @@ final class SqlConnectionFactory
 
         $client = match (true) {
             $dialect === 'mysql' && $driver === 'native' => new MysqliAsyncClient($host, $user, $password, $database, $port, $options),
-            $dialect === 'mysql' => new PdoMysqlClient($host, $user, $password, $database, $port, $options),
+            $dialect === 'mysql' => new PdoMysqlClient($host, $user, $password, $database, $port, $options, $singleSession),
             $driver === 'native' => new PgsqlAsyncClient($host, $user, $password, $database, $port, $options),
-            default => new PdoPgsqlClient($host, $user, $password, $database, $port, $options),
+            default => new PdoPgsqlClient($host, $user, $password, $database, $port, $options, $singleSession),
         };
 
         // Warming connects right here, so a wrong DB config fails at

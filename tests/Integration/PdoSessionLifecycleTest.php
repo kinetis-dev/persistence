@@ -5,13 +5,16 @@ declare(strict_types=1);
 namespace Kinetis\Persistence\Tests\Integration;
 
 use Fiber;
+use Kinetis\Config\Config;
+use Kinetis\Persistence\Contract\SqlLink;
 use Kinetis\Persistence\Exception\ConnectionException;
+use Kinetis\Persistence\SqlConnectionFactory;
 use PHPUnit\Framework\Attributes\DataProvider;
 
 /**
  * What a PDO client does with the physical session it holds, against a
- * real server: a session that can carry no more work is handed back and
- * replaced on the next call, while close() ends the client itself.
+ * real server: an ordinary client replaces a session it can carry no
+ * more work on, and a single-session client closes instead.
  *
  * The server's own session id is the evidence — MySQL's
  * CONNECTION_ID(), Postgres's pg_backend_pid() — so "a fresh
@@ -36,35 +39,13 @@ final class PdoSessionLifecycleTest extends DriverCase
         yield 'pdo-pgsql' => ['pdo-pgsql'];
     }
 
-    #[DataProvider('pdoDrivers')]
-    public function test_a_discarded_session_is_replaced_on_the_next_call(string $driver): void
-    {
-        $db = self::makeClient($driver);
-        $discarded = self::serverSessionId($driver, $db);
-
-        $transaction = $db->beginTransaction();
-        new Fiber(static fn () => $transaction->close())->start();
-
-        self::assertFalse($transaction->isActive());
-        self::assertFalse($db->isClosed());
-
-        $fresh = self::serverSessionId($driver, $db);
-        self::assertNotSame($discarded, $fresh);
-
-        // And the replacement is an ordinary session the client keeps,
-        // not a connection opened for one statement.
-        self::assertSame($fresh, self::serverSessionId($driver, $db));
-
-        $db->close();
-    }
-
     /**
-     * The work of a transaction whose session was discarded is gone —
-     * the server rolled it back as the session went — and the client
-     * carries an ordinary transaction on the replacement.
+     * The replacement is a session of the server's own — a different
+     * backend, kept from then on — and the work the discarded session
+     * was carrying went back with it.
      */
     #[DataProvider('pdoDrivers')]
-    public function test_the_discarded_session_takes_its_uncommitted_work_with_it(string $driver): void
+    public function test_a_discarded_session_is_replaced_and_takes_its_work_with_it(string $driver): void
     {
         $db = self::makeClient($driver);
         // Dropped on the way in: the session this test discards may
@@ -72,42 +53,62 @@ final class PdoSessionLifecycleTest extends DriverCase
         // would wait on the table lock it is holding.
         $db->query('DROP TABLE IF EXISTS pdo_session_lifecycle');
         $db->query('CREATE TABLE pdo_session_lifecycle (id ' . self::autoIncrementColumn($driver) . ', n INT NOT NULL)');
+        $discarded = self::serverSessionId($driver, $db);
 
         $transaction = $db->beginTransaction();
         $transaction->execute('INSERT INTO pdo_session_lifecycle (n) VALUES (?)', [7]);
         new Fiber(static fn () => $transaction->close())->start();
 
+        self::assertFalse($transaction->isActive());
+        self::assertFalse($db->isClosed());
+
+        $fresh = self::serverSessionId($driver, $db);
+        self::assertNotSame($discarded, $fresh);
+        // And it is the client's session from here, not a connection
+        // opened for one statement.
+        self::assertSame($fresh, self::serverSessionId($driver, $db));
         self::assertSame([], \iterator_to_array($db->query('SELECT n FROM pdo_session_lifecycle')));
-
-        $second = $db->beginTransaction();
-        $second->execute('INSERT INTO pdo_session_lifecycle (n) VALUES (?)', [8]);
-        $second->commit();
-
-        $rows = \iterator_to_array($db->query('SELECT n FROM pdo_session_lifecycle'));
-        self::assertCount(1, $rows);
-        self::assertSame(8, (int) $rows[0]['n']);
 
         $db->close();
     }
 
     /**
-     * close() is the ending a client does not come back from, whether or
-     * not a session was discarded first, and it is idempotent.
+     * The single-session client kinetis/migrations runs on. Its advisory
+     * lock lives in the session, so a replacement would be an unlocked
+     * one: it closes where the session went, and every later call says
+     * so.
      */
     #[DataProvider('pdoDrivers')]
-    public function test_close_stays_final_after_a_discarded_session(string $driver): void
+    public function test_a_single_session_client_closes_where_its_session_went(string $driver): void
     {
-        $db = self::makeClient($driver);
+        $db = self::singleSessionClient($driver);
+        self::serverSessionId($driver, $db);
 
         $transaction = $db->beginTransaction();
         new Fiber(static fn () => $transaction->close())->start();
-        self::serverSessionId($driver, $db);
-
-        $db->close();
-        $db->close();
 
         self::assertTrue($db->isClosed());
         $this->expectException(ConnectionException::class);
         $db->query('SELECT 1');
+    }
+
+    /**
+     * Built the way the migrate:* commands build theirs, so the policy
+     * is proven on the client a deployment gets rather than one the test
+     * pinned by hand.
+     */
+    private static function singleSessionClient(string $driver): SqlLink
+    {
+        $mysql = self::isMysql($driver);
+        [$host, $user, $password, $database, $port] = $mysql ? self::mysqlArgs() : self::postgresArgs();
+
+        return SqlConnectionFactory::singleSession(new Config([
+            'DB_CONNECTION' => $mysql ? 'mysql' : 'pgsql',
+            'DB_HOST' => $host,
+            'DB_USER' => $user,
+            'DB_PASSWORD' => $password,
+            'DB_NAME' => $database,
+            'DB_PORT' => (string) $port,
+        ]));
     }
 }

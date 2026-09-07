@@ -139,9 +139,8 @@ final class SqlConnectionFactoryTest extends TestCase
     }
 
     /**
-     * kinetis/migrations needs one connection that is never replaced,
-     * whatever the deployment's own DB_DRIVER says, because the advisory
-     * lock it holds is scoped to the database session.
+     * The $driver argument is for a caller that knows which driver its
+     * own work needs, whatever the deployment's DB_DRIVER says.
      */
     public function test_an_explicit_driver_argument_overrides_the_db_driver_key(): void
     {
@@ -153,6 +152,23 @@ final class SqlConnectionFactoryTest extends TestCase
 
         // And without it, the key still decides.
         self::assertInstanceOf(MysqliAsyncClient::class, SqlConnectionFactory::fromConfig($mysql));
+    }
+
+    /**
+     * singleSession() is that override plus a session policy: PDO on
+     * either dialect, and closed rather than reconnected if it loses the
+     * session — which is what kinetis/migrations' session-scoped
+     * advisory lock needs. What the policy does is
+     * {@see PdoTransactionOwnershipTest}, and against real servers
+     * {@see Integration\PdoSessionLifecycleTest}.
+     */
+    public function test_single_session_builds_a_pdo_client_whatever_db_driver_says(): void
+    {
+        $mysql = new Config(['DB_CONNECTION' => 'mysql', 'DB_DRIVER' => 'native', 'DB_PASSWORD' => 's']);
+        $postgres = new Config(['DB_CONNECTION' => 'pgsql', 'DB_DRIVER' => 'native', 'DB_PASSWORD' => 's']);
+
+        self::assertInstanceOf(PdoMysqlClient::class, SqlConnectionFactory::singleSession($mysql));
+        self::assertInstanceOf(PdoPgsqlClient::class, SqlConnectionFactory::singleSession($postgres));
     }
 
     public function test_an_unknown_driver_argument_is_rejected_like_the_key(): void

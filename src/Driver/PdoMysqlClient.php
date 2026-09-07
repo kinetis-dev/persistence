@@ -29,9 +29,9 @@ use PDOStatement;
  * The connection is opened lazily and there is only ever one of it:
  * this client does not pool, so overlapping work is what the
  * {@see MysqliAsyncClient} driver is for. A session that can carry no
- * more work is handed back to the server and replaced on the next call
- * ({@see PdoExecutionTrait::discardSession()}); `close()` is the one
- * ending that is final.
+ * more work is handed back to the server
+ * ({@see PdoExecutionTrait::discardSession()}) and replaced on the next
+ * call, unless $singleSession pins the client to the first one.
  */
 final class PdoMysqlClient implements MysqlLink, PrefersPreparedStatements
 {
@@ -46,7 +46,10 @@ final class PdoMysqlClient implements MysqlLink, PrefersPreparedStatements
         private readonly string $database,
         private readonly int $port = 3306,
         ?ConnectionOptions $options = null,
+        bool $singleSession = false,
     ) {
+        $this->singleSession = $singleSession;
+
         // applicationName is a Postgres concept.
         $this->options = $options ?? new ConnectionOptions();
         $this->options->rejectUnsupported('PDO mysql', ['applicationName']);
@@ -130,8 +133,7 @@ final class PdoMysqlClient implements MysqlLink, PrefersPreparedStatements
      * Closing the cursor is what establishes the session is clean for
      * the next statement. Where even that fails, nothing about the
      * protocol state is established, so the session is given up rather
-     * than carrying anything further; the caller's next call runs on a
-     * fresh one.
+     * than carrying anything further.
      */
     private function closeCursor(PDOStatement $statement): void
     {
@@ -149,16 +151,8 @@ final class PdoMysqlClient implements MysqlLink, PrefersPreparedStatements
     }
 
     #[\Override]
-    private function connection(): PDO
+    private function openConnection(): PDO
     {
-        if ($this->closed) {
-            throw new ConnectionException('The client has been closed');
-        }
-
-        if ($this->pdo !== null) {
-            return $this->pdo;
-        }
-
         $charset = $this->options->charset ?? 'utf8mb4';
         $attributes = [
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
@@ -217,6 +211,6 @@ final class PdoMysqlClient implements MysqlLink, PrefersPreparedStatements
             throw new ConnectionException('Failed to connect to MySQL: ' . $e->getMessage(), 0, $e);
         }
 
-        return $this->pdo = $pdo;
+        return $pdo;
     }
 }
