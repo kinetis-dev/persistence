@@ -62,13 +62,6 @@ final class PreDispatchPreflightTest extends TestCase
     #[DataProvider('coldClients')]
     public function test_a_cold_client_refuses_an_invalid_call_before_it_connects(string $driver): void
     {
-        // The native pgsql client refuses construction without
-        // ext-sockets, so on a build lacking it there is no cold client
-        // to hold to the rule; every other case still runs.
-        if ($driver === 'pgsql-async' && !\function_exists('socket_import_stream')) {
-            self::markTestSkipped('ext-sockets is not loaded — PgsqlAsyncClient cannot be constructed.');
-        }
-
         $client = self::coldClient($driver);
         $hooks = $this->recordTelemetry();
 
