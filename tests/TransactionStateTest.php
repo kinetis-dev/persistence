@@ -36,9 +36,11 @@ final class TransactionStateTest extends TestCase
     {
         $transaction = new FakeDriverTransaction();
 
-        $failure = self::inNewFiber(static fn () => $transaction->query('SELECT 1'));
+        $queryFailure = self::inNewFiber(static fn () => $transaction->query('SELECT 1'));
+        $executeFailure = self::inNewFiber(static fn () => $transaction->execute('SELECT ?', [1]));
 
-        self::assertInstanceOf(TransactionException::class, $failure);
+        self::assertInstanceOf(TransactionException::class, $queryFailure);
+        self::assertInstanceOf(TransactionException::class, $executeFailure);
         self::assertSame(0, $transaction->dispatches);
     }
 
@@ -229,14 +231,47 @@ final class TransactionStateTest extends TestCase
         $transaction->commit();
     }
 
+    /**
+     * A statement is where that same settling has to happen too: the
+     * transaction ends and the statement is refused, rather than going
+     * down a connection that would run it in autocommit.
+     */
+    public function test_a_statement_on_a_server_ended_transaction_is_refused(): void
+    {
+        $transaction = new FakeDriverTransaction();
+        $transaction->onConnection = false;
+
+        try {
+            $transaction->query('SELECT 1');
+            self::fail('Expected the statement to be refused.');
+        } catch (TransactionException) {
+        }
+
+        self::assertSame(0, $transaction->dispatches);
+        self::assertSame([], $transaction->finished);
+        self::assertSame([false], $transaction->released);
+    }
+
+    /**
+     * Rolling back a transaction the server has already ended settles it
+     * without sending a ROLLBACK that would run in autocommit. The
+     * connection itself is healthy, so it is handed back rather than
+     * discarded, and asking again does nothing further.
+     */
     public function test_rollback_after_the_transaction_ended_is_a_no_op(): void
     {
         $transaction = new FakeDriverTransaction();
-        $transaction->rollback();
+        $transaction->onConnection = false;
 
         $transaction->rollback();
 
-        self::assertSame([false], $transaction->finished);
+        self::assertSame([], $transaction->finished);
+        self::assertSame([false], $transaction->released);
+
+        $transaction->rollback();
+
+        self::assertSame([], $transaction->finished);
+        self::assertSame([false], $transaction->released);
     }
 
     public function test_commit_after_the_transaction_ended_throws(): void
@@ -298,10 +333,11 @@ final class TransactionStateTest extends TestCase
         } catch (QueryException) {
         }
 
-        self::assertFalse($transaction->isActive());
-        // Nothing was sent: the server has already rolled it back.
+        // Settled by the failure itself, before anything asks. Nothing
+        // was sent: the server has already rolled it back.
         self::assertSame([], $transaction->finished);
         self::assertSame([false], $transaction->released);
+        self::assertFalse($transaction->isActive());
 
         try {
             $transaction->execute('UPDATE t SET v = ? WHERE id = ?', [1, 3]);
@@ -327,9 +363,10 @@ final class TransactionStateTest extends TestCase
 
         $transaction->query('CREATE TABLE t (id INT)');
 
-        self::assertFalse($transaction->isActive());
+        // Settled by the statement's own answer, before anything asks.
         self::assertSame([], $transaction->finished);
         self::assertSame([false], $transaction->released);
+        self::assertFalse($transaction->isActive());
 
         $this->expectException(TransactionException::class);
         $transaction->query('SELECT 1');
@@ -420,13 +457,17 @@ final class TransactionStateTest extends TestCase
             $settledByClose = !$transaction->isActive();
         };
         // What the driver throws into the owner once its connection has
-        // been taken out from under the COMMIT.
-        $transaction->failFinish = new ConnectionException('The MySQL connection was closed with a statement in flight');
+        // been taken out from under the COMMIT. The owner gets that
+        // failure itself: what the driver saw outranks the interruption
+        // the transaction reports when the driver saw nothing.
+        $lostConnection = new ConnectionException('The MySQL connection was closed with a statement in flight');
+        $transaction->failFinish = $lostConnection;
 
         try {
             $transaction->commit();
             self::fail('Expected the interrupted commit to propagate.');
-        } catch (ConnectionException) {
+        } catch (ConnectionException $e) {
+            self::assertSame($lostConnection, $e);
         }
 
         self::assertTrue($stillActive, 'A transaction finishing on the wire is still the disposal hook\'s to close.');
