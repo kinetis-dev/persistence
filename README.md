@@ -29,13 +29,15 @@ under boot-and-die — all presenting this package's own
 above the driver needs to know which one it's talking to.
 
 ```php
+use Kinetis\Persistence\Contract\SqlTransaction;
 use Kinetis\Persistence\SqlConnectionFactory;
 use Kinetis\Persistence\TransactionGuard;
 
 $db = SqlConnectionFactory::fromConfig($config);
+$guard = new TransactionGuard($logger);
 
-$guard->transaction($db, function ($tx) {
-    $tx->execute('INSERT INTO orders (...) VALUES (...)');
+$guard->transaction($db, static function (SqlTransaction $tx): void {
+    $tx->execute('UPDATE inventory SET stock = stock - 1 WHERE sku = ?', ['SKU-1']);
 });
 ```
 
@@ -50,10 +52,11 @@ the application's own `bootstrap.php`, which wins on the same binding.
 autowired fresh per `RequestScope` like any other unregistered class,
 tracking every transaction it starts so a request that throws before
 committing or rolling back doesn't leak an open transaction into
-whatever the pooled connection is reused for next. `Kinetis\Http\Kernel`
-wires `rollbackDangling()` into `RequestScope::onDispose()` automatically
-whenever this package is installed — a no-op for a request that never
-opens one.
+whatever the pooled connection is reused for next. Every entry point
+that owns a `RequestScope` for one unit of work — HTTP, the CLI, MCP
+over stdio, and a queue worker's jobs — wires `rollbackDangling()` into
+that scope's disposal automatically whenever this package is installed;
+it is a no-op for a unit of work that never opens a transaction.
 
 Optional: an application with no database at all can skip this package
 entirely — `Kinetis\Http\Kernel` degrades gracefully (`class_exists()`
