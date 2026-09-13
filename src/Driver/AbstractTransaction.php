@@ -64,6 +64,7 @@ use Throwable;
  * to dispatch first.
  *
  * @internal
+ * @implements SqlTransaction<never>
  */
 abstract class AbstractTransaction implements SqlTransaction
 {
@@ -129,7 +130,7 @@ abstract class AbstractTransaction implements SqlTransaction
     }
 
     #[\Override]
-    public function beginTransaction(): SqlTransaction
+    public function beginTransaction(): never
     {
         throw new TransactionException('Nested transactions are not supported by ' . $this->driverLabel());
     }

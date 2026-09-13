@@ -121,7 +121,7 @@ final class PdoMysqlClient implements MysqlLink, PrefersPreparedStatements
             // PDOStatement carries the text it was built from, which is
             // how a failure this far from the call site still names the
             // statement it belongs to.
-            throw new QueryException($e->getMessage(), $statement->queryString, $e, PdoError::vendorCode($e));
+            throw new QueryException($e->getMessage(), $statement->queryString, $e, PdoError::vendorCode($e), PdoError::sqlState($e));
         }
 
         $this->closeCursor($statement);

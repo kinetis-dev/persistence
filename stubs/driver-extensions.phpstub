@@ -24,6 +24,7 @@ const PGSQL_BAD_RESPONSE = 5;
 const PGSQL_FATAL_ERROR = 7;
 const PGSQL_TRANSACTION_IDLE = 0;
 const PGSQL_TRANSACTION_UNKNOWN = 4;
+const PGSQL_DIAG_SQLSTATE = 67;
 
 /** ext-sockets' handle type, which disposal shuts a connection's transport down through. */
 final class Socket

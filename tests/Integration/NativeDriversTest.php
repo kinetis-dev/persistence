@@ -8,6 +8,7 @@ use Kinetis\Persistence\ConnectionOptions;
 use Kinetis\Persistence\Driver\MysqliAsyncClient;
 use Kinetis\Persistence\Driver\PgsqlAsyncClient;
 use Kinetis\Persistence\Exception\ConnectionException;
+use Kinetis\Persistence\Exception\QueryException;
 use Kinetis\Persistence\Exception\TransactionException;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Throwable;
@@ -303,6 +304,53 @@ final class NativeDriversTest extends DriverCase
         self::assertIsArray($connections);
         self::assertCount(2, $connections);
         $db->close();
+    }
+
+    /**
+     * Each driver's own failure point supplies the SQLSTATE. A duplicate
+     * key is a unique violation on every driver, and a NOT NULL violation
+     * — SQLSTATE 23000 on the MySQL family, the same as a duplicate — is
+     * not. The in-transaction case covers the PDO drivers' separate
+     * transaction path.
+     */
+    #[DataProvider('drivers')]
+    public function test_a_duplicate_key_is_a_unique_violation_and_a_not_null_violation_is_not(string $driver): void
+    {
+        $db = self::makeClient($driver);
+        $db->query('DROP TABLE IF EXISTS drv_unique');
+        $db->query('CREATE TABLE drv_unique (slug VARCHAR(32) NOT NULL UNIQUE)');
+        $db->execute('INSERT INTO drv_unique (slug) VALUES (?)', ['taken']);
+
+        $duplicate = self::queryFailure(static fn () => $db->execute('INSERT INTO drv_unique (slug) VALUES (?)', ['taken']));
+        self::assertTrue($duplicate->isUniqueViolation());
+        self::assertSame(self::isMysql($driver) ? '23000' : '23505', $duplicate->getSqlState());
+
+        if (self::isMysql($driver)) {
+            self::assertSame(1062, $duplicate->getCode());
+        }
+
+        $notNull = self::queryFailure(static fn () => $db->execute('INSERT INTO drv_unique (slug) VALUES (?)', [null]));
+        self::assertFalse($notNull->isUniqueViolation());
+        self::assertSame(self::isMysql($driver) ? '23000' : '23502', $notNull->getSqlState());
+
+        $tx = $db->beginTransaction();
+        $inTransaction = self::queryFailure(static fn () => $tx->execute('INSERT INTO drv_unique (slug) VALUES (?)', ['taken']));
+        self::assertTrue($inTransaction->isUniqueViolation());
+        $tx->rollback();
+
+        self::assertSame(1, (int) $db->query('SELECT COUNT(*) AS c FROM drv_unique')->fetchRow()['c']);
+        $db->close();
+    }
+
+    private static function queryFailure(callable $statement): QueryException
+    {
+        try {
+            $statement();
+        } catch (QueryException $e) {
+            return $e;
+        }
+
+        self::fail('The statement was expected to throw a QueryException.');
     }
 
     /**

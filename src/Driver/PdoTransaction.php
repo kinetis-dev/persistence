@@ -89,7 +89,7 @@ abstract class PdoTransaction extends AbstractTransaction
 
             return $this->build($statement);
         } catch (PDOException $e) {
-            throw new QueryException($e->getMessage(), $sql, $e, PdoError::vendorCode($e));
+            throw new QueryException($e->getMessage(), $sql, $e, PdoError::vendorCode($e), PdoError::sqlState($e));
         }
     }
 
@@ -101,7 +101,7 @@ abstract class PdoTransaction extends AbstractTransaction
 
             return $this->build($statement);
         } catch (PDOException $e) {
-            throw new QueryException($e->getMessage(), $query->sql, $e, PdoError::vendorCode($e));
+            throw new QueryException($e->getMessage(), $query->sql, $e, PdoError::vendorCode($e), PdoError::sqlState($e));
         }
     }
 

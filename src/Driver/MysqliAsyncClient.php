@@ -360,7 +360,7 @@ final class MysqliAsyncClient implements MysqlLink
             return new StaleConnectionException("MySQL connection lost during dispatch: {$message}", 0, $e);
         }
 
-        return new QueryException($message, $sql, $e, $errno);
+        return new QueryException($message, $sql, $e, $errno, self::sqlState($connection));
     }
 
     /**
@@ -384,7 +384,13 @@ final class MysqliAsyncClient implements MysqlLink
             return new ConnectionException("MySQL connection lost while reading the result: {$message}", 0, $e);
         }
 
-        return new QueryException($message, $sql, $e, $connection->errno);
+        return new QueryException($message, $sql, $e, $connection->errno, self::sqlState($connection));
+    }
+
+    /** The SQLSTATE of the connection's last error; mysqli reports 00000 when there is none. */
+    private static function sqlState(mysqli $connection): ?string
+    {
+        return $connection->sqlstate !== '00000' ? $connection->sqlstate : null;
     }
 
     /**

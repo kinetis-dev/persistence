@@ -7,9 +7,9 @@ namespace Kinetis\Persistence\Driver;
 use PDOException;
 
 /**
- * What a PDOException carries beyond its message. SQLSTATE alone does
- * not tell a MySQL lock-wait timeout from a deadlock; the driver's own
- * error number does, and this is where it is read out.
+ * What a PDOException carries beyond its message: the SQLSTATE, and the
+ * driver's own error number. SQLSTATE alone does not tell a MySQL
+ * lock-wait timeout from a deadlock; the number does.
  *
  * @internal
  */
@@ -21,5 +21,13 @@ final class PdoError
         $code = $e->errorInfo[1] ?? null;
 
         return \is_int($code) ? $code : 0;
+    }
+
+    /** Null where the driver reported no SQLSTATE. */
+    public static function sqlState(PDOException $e): ?string
+    {
+        $state = $e->errorInfo[0] ?? null;
+
+        return \is_string($state) ? $state : null;
     }
 }

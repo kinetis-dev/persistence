@@ -6,6 +6,8 @@ namespace Kinetis\Persistence\Contract;
 
 /**
  * Dialect marker: a link speaking Postgres.
+ *
+ * @extends SqlLink<PostgresTransaction>
  */
 interface PostgresLink extends SqlLink
 {

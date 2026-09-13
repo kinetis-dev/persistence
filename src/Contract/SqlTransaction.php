@@ -29,6 +29,13 @@ namespace Kinetis\Persistence\Contract;
  * unknown outcome. On MySQL, DDL commits the surrounding transaction
  * implicitly — see docs/migrations.md — and the native driver cannot
  * observe that, so keep DDL out of transactions.
+ *
+ * TTransaction passes the dialect through to SqlLink, so a
+ * MysqlTransaction and the MysqlLink it also is agree on one
+ * SqlLink<MysqlTransaction> ancestor, and likewise for Postgres.
+ *
+ * @template-covariant TTransaction of SqlTransaction = SqlTransaction
+ * @extends SqlLink<TTransaction>
  */
 interface SqlTransaction extends SqlLink
 {

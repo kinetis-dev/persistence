@@ -10,6 +10,12 @@ namespace Kinetis\Persistence\Contract;
  * TransactionGuard expect. Kinetis-owned: every driver in
  * Kinetis\Persistence\Driver implements this, and nothing in the
  * persistence stack references a client library's own types.
+ *
+ * TTransaction is the transaction beginTransaction() returns: a
+ * MysqlLink begins a MysqlTransaction and a PostgresLink a
+ * PostgresTransaction, so a transaction keeps its link's dialect.
+ *
+ * @template-covariant TTransaction of SqlTransaction = SqlTransaction
  */
 interface SqlLink
 {
@@ -68,6 +74,8 @@ interface SqlLink
      * connection — {@see SqlTransaction} for what happens to one that
      * is dropped instead. It costs the connection and the certainty,
      * which is why the guard is the normal route and this is not.
+     *
+     * @return TTransaction
      */
     public function beginTransaction(): SqlTransaction;
 

@@ -209,7 +209,7 @@ trait PdoExecutionTrait
         try {
             $result = $statement();
         } catch (PDOException $e) {
-            $failure = new QueryException($e->getMessage(), $sql, $e, PdoError::vendorCode($e));
+            $failure = new QueryException($e->getMessage(), $sql, $e, PdoError::vendorCode($e), PdoError::sqlState($e));
             $telemetry->queryReaped($token, $failure);
 
             throw $failure;
@@ -279,7 +279,7 @@ trait PdoExecutionTrait
         try {
             $this->connection()->beginTransaction();
         } catch (PDOException $e) {
-            throw new QueryException('Failed to begin transaction: ' . $e->getMessage(), '', $e, PdoError::vendorCode($e));
+            throw new QueryException('Failed to begin transaction: ' . $e->getMessage(), '', $e, PdoError::vendorCode($e), PdoError::sqlState($e));
         }
 
         $transaction = $make(

@@ -563,6 +563,7 @@ final class PgsqlAsyncClient implements PostgresLink
             $connection->resultError ??= new QueryException(
                 \pg_result_error($result) ?: 'Query failed',
                 $connection->sql,
+                sqlState: \pg_result_error_field($result, \PGSQL_DIAG_SQLSTATE) ?: null,
             );
 
             return true;

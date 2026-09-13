@@ -44,6 +44,11 @@ final class TransactionGuard
         private readonly LoggerInterface $logger,
     ) {}
 
+    /**
+     * @template TTransaction of SqlTransaction
+     * @param SqlLink<TTransaction> $link
+     * @return TTransaction
+     */
     public function beginTransaction(SqlLink $link): SqlTransaction
     {
         $transaction = $link->beginTransaction();
@@ -67,8 +72,13 @@ final class TransactionGuard
      * where a throw would replace the exception already propagating from
      * here.
      *
+     * The callback receives the link's own transaction type — see
+     * {@see SqlLink}.
+     *
+     * @template TTransaction of SqlTransaction
      * @template T
-     * @param callable(SqlTransaction): T $callback
+     * @param SqlLink<TTransaction> $link
+     * @param callable(TTransaction): T $callback
      * @return T
      */
     public function transaction(SqlLink $link, callable $callback): mixed
