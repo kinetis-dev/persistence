@@ -19,8 +19,8 @@
         "kinetis/queue": "dev-main",
         "nyholm/psr7": "^1.8.2",
         "phpstan/phpstan": "^2.2.8",
-        "phpunit/phpunit": "^12.5.33",
-        "vimeo/psalm": "^6.16.1"
+        "phpunit/phpunit": "^13.3.3",
+        "vimeo/psalm": "^6.17"
     },
     "suggest": {
         "ext-mysqli": "Needed by the native MySQL driver (Kinetis\\Persistence\\Driver\\MysqliAsyncClient) — the default under FrankenPHP worker mode via DB_DRIVER=auto.",
