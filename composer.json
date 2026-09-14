@@ -15,7 +15,7 @@
     },
     "require-dev": {
         "infection/infection": "^0.35.0",
-        "kinetis/framework": "dev-main",
+        "kinetis/framework": "^1.10.0",
         "phpstan/phpstan": "^2.2.8",
         "phpunit/phpunit": "^13.3.3",
         "vimeo/psalm": "^6.17"
@@ -37,12 +37,6 @@
             "Kinetis\\Persistence\\Tests\\": "tests/"
         }
     },
-    "repositories": [
-        {
-            "type": "path",
-            "url": "../framework"
-        }
-    ],
     "config": {
         "sort-packages": true,
         "allow-plugins": {
