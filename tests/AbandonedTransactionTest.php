@@ -4,9 +4,7 @@ declare(strict_types=1);
 
 namespace Kinetis\Persistence\Tests;
 
-use Kinetis\Instrumentation\NullTelemetry;
-use Kinetis\Instrumentation\Telemetry;
-use Kinetis\Instrumentation\TelemetryInterface;
+use Kinetis\Persistence\Contract\SqlInstrumentation;
 use Kinetis\Persistence\Exception\TransactionException;
 use Kinetis\Persistence\Tests\Fixtures\FakePooledClient;
 use Kinetis\Persistence\Tests\Fixtures\InMemoryLogger;
@@ -27,12 +25,6 @@ use PHPUnit\Framework\TestCase;
  */
 final class AbandonedTransactionTest extends TestCase
 {
-    /** The telemetry holder is a per-process singleton. */
-    protected function tearDown(): void
-    {
-        Telemetry::global()->swap(new NullTelemetry());
-    }
-
     /**
      * The whole point of the ownership: while the transaction is open,
      * the Fiber holding it is refused at the root link, since a
@@ -82,12 +74,11 @@ final class AbandonedTransactionTest extends TestCase
      */
     public function test_an_abandoned_transaction_discards_its_connection_without_sending_anything(): void
     {
-        $telemetry = $this->createMock(TelemetryInterface::class);
-        $telemetry->method('transactionStarted')->willReturn('token');
-        $telemetry->expects(self::once())->method('transactionEnded')->with('token', 'unknown');
-        Telemetry::global()->swap($telemetry);
+        $instrumentation = $this->createMock(SqlInstrumentation::class);
+        $instrumentation->method('transactionStarted')->willReturn('token');
+        $instrumentation->expects(self::once())->method('transactionEnded')->with('token', 'unknown');
 
-        $client = new FakePooledClient();
+        $client = new FakePooledClient($instrumentation);
         $client->beginTransaction()->execute('INSERT INTO items (name) VALUES (?)', ['a']);
 
         self::assertSame(['INSERT INTO items (name) VALUES (?)'], $client->onConnection);

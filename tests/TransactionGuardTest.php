@@ -4,8 +4,6 @@ declare(strict_types=1);
 
 namespace Kinetis\Persistence\Tests;
 
-use Kinetis\Container\AppScope;
-use Kinetis\Container\TransactionGuardHook;
 use Kinetis\Persistence\TransactionGuard;
 use Kinetis\Persistence\Tests\Fixtures\InMemoryLogger;
 use Kinetis\Persistence\Tests\Fixtures\FakeSqlLink;
@@ -13,7 +11,6 @@ use Kinetis\Persistence\Tests\Fixtures\FakeSqlTransaction;
 use Kinetis\Persistence\Tests\Fixtures\ThrowingLogger;
 use LogicException;
 use PHPUnit\Framework\TestCase;
-use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
 use RuntimeException;
 
@@ -317,25 +314,17 @@ final class TransactionGuardTest extends TestCase
     /**
      * The real bug a prior fix still had: leaving a helper-managed
      * transaction tracked after its own rollback failed meant
-     * rollbackDangling() — wired as a RequestScope dispose hook, run from
-     * a `finally` — would retry it at scope disposal. If that retry also
-     * failed, rollbackDangling()'s own throw would silently replace
-     * whatever exception was already propagating from transaction() the
-     * moment dispose() ran, the exact failure-erasing bug transaction()
-     * itself already guards against one level down. Proven here with the
-     * real RequestScope/dispose() machinery, not TransactionGuard in
-     * isolation — the unit-level test above alone kept passing even with
-     * that bug present, since it never exercised scope disposal at all.
+     * rollbackDangling() — run by the host from a `finally` when the unit
+     * of work ends — would retry it. If that retry also failed,
+     * rollbackDangling()'s own throw would silently replace whatever
+     * exception was already propagating from transaction(), the exact
+     * failure-erasing bug transaction() itself already guards against
+     * one level down. The unit-level test above alone kept passing even
+     * with that bug present, since it never ran the end-of-unit cleanup.
      */
-    public function test_the_original_callback_failure_survives_scope_disposal_even_when_rollback_fails_twice(): void
+    public function test_the_original_callback_failure_survives_end_of_unit_cleanup_even_when_rollback_fails_twice(): void
     {
-        $app = new AppScope();
-        $app->boot();
-        $scope = $app->createRequestScope();
-        TransactionGuardHook::registerIfAvailable($scope);
-
-        /** @var TransactionGuard $guard */
-        $guard = $scope->get(TransactionGuard::class);
+        $guard = new TransactionGuard(new NullLogger());
         $link = new FakeSqlLink();
 
         try {
@@ -347,28 +336,22 @@ final class TransactionGuardTest extends TestCase
                 });
                 self::fail('Expected a RuntimeException.');
             } finally {
-                // The real dispose hook: if the transaction were still
-                // tracked here, rollbackDangling() would retry it — still
-                // toggled to fail — and its own throw would replace the
-                // RuntimeException currently propagating out of the try
-                // block above.
-                $scope->dispose();
+                // The host's end-of-unit cleanup: if the transaction were
+                // still tracked here, rollbackDangling() would retry it —
+                // still toggled to fail — and its own throw would replace
+                // the RuntimeException currently propagating out of the
+                // try block above.
+                $guard->rollbackDangling();
             }
         } catch (RuntimeException $e) {
             self::assertSame('original callback failure', $e->getMessage());
         }
     }
 
-    /** The same scope-disposal proof, for the commit-fails variant. */
-    public function test_the_original_commit_failure_survives_scope_disposal_even_when_rollback_fails_twice(): void
+    /** The same end-of-unit proof, for the commit-fails variant. */
+    public function test_the_original_commit_failure_survives_end_of_unit_cleanup_even_when_rollback_fails_twice(): void
     {
-        $app = new AppScope();
-        $app->boot();
-        $scope = $app->createRequestScope();
-        TransactionGuardHook::registerIfAvailable($scope);
-
-        /** @var TransactionGuard $guard */
-        $guard = $scope->get(TransactionGuard::class);
+        $guard = new TransactionGuard(new NullLogger());
         $link = new FakeSqlLink();
 
         try {
@@ -381,7 +364,7 @@ final class TransactionGuardTest extends TestCase
                 });
                 self::fail('Expected a LogicException.');
             } finally {
-                $scope->dispose();
+                $guard->rollbackDangling();
             }
         } catch (LogicException $e) {
             self::assertSame('Commit failed.', $e->getMessage());
@@ -389,25 +372,18 @@ final class TransactionGuardTest extends TestCase
     }
 
     /**
-     * The same scope-disposal proof, but with the configured logger
-     * itself also broken (throwing from error()) on top of the callback
-     * and rollback both failing — a logging failure while handling an
+     * The same end-of-unit proof, but with the configured logger itself
+     * also broken (throwing from error()) on top of the callback and
+     * rollback both failing — a logging failure while handling an
      * existing primary failure must never replace it either, the same
      * way a rollback failure alone must not.
      */
-    public function test_the_original_callback_failure_survives_scope_disposal_even_when_error_logging_also_fails(): void
+    public function test_the_original_callback_failure_survives_end_of_unit_cleanup_even_when_error_logging_also_fails(): void
     {
         $logger = new ThrowingLogger();
         $logger->throwOnError = true;
 
-        $app = new AppScope();
-        $app->instance(LoggerInterface::class, $logger);
-        $app->boot();
-        $scope = $app->createRequestScope();
-        TransactionGuardHook::registerIfAvailable($scope);
-
-        /** @var TransactionGuard $guard */
-        $guard = $scope->get(TransactionGuard::class);
+        $guard = new TransactionGuard($logger);
         $link = new FakeSqlLink();
 
         try {
@@ -419,7 +395,7 @@ final class TransactionGuardTest extends TestCase
                 });
                 self::fail('Expected a RuntimeException.');
             } finally {
-                $scope->dispose();
+                $guard->rollbackDangling();
             }
         } catch (RuntimeException $e) {
             self::assertSame('original callback failure', $e->getMessage());

@@ -9,6 +9,7 @@ use Kinetis\Persistence\ConnectionOptions;
 use Kinetis\Persistence\Contract\PostgresLink;
 use Kinetis\Persistence\Contract\PostgresTransaction;
 use Kinetis\Persistence\Contract\PrefersPreparedStatements;
+use Kinetis\Persistence\Contract\SqlInstrumentation;
 use Kinetis\Persistence\Exception\ConnectionException;
 use PDO;
 use PDOException;
@@ -45,8 +46,10 @@ final class PdoPgsqlClient implements PostgresLink, PrefersPreparedStatements
         private readonly int $port = 5432,
         ?ConnectionOptions $options = null,
         bool $singleSession = false,
+        ?SqlInstrumentation $instrumentation = null,
     ) {
         $this->singleSession = $singleSession;
+        $this->instrumentation = new ContainedSqlInstrumentation($instrumentation);
 
         $this->options = $options ?? new ConnectionOptions();
         // Collation and protocol compression are MySQL concepts.
@@ -63,7 +66,7 @@ final class PdoPgsqlClient implements PostgresLink, PrefersPreparedStatements
         /** @var PdoPgsqlTransaction */
         return $this->startPdoTransaction(
             fn (PDO $pdo, PdoStatementCache $statements, Closure $endOwnership): PdoTransaction
-                => new PdoPgsqlTransaction($pdo, $statements, $this->buildResult(...), $endOwnership),
+                => new PdoPgsqlTransaction($pdo, $statements, $this->buildResult(...), $endOwnership, $this->instrumentation),
         );
     }
 

@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace Kinetis\Persistence\Tests\Integration;
 
 use Fiber;
-use Kinetis\Config\Config;
+use Kinetis\Persistence\ConnectionDefinition;
 use Kinetis\Persistence\Contract\SqlLink;
 use Kinetis\Persistence\Exception\ConnectionException;
 use Kinetis\Persistence\SqlConnectionFactory;
@@ -102,13 +102,13 @@ final class PdoSessionLifecycleTest extends DriverCase
         $mysql = self::isMysql($driver);
         [$host, $user, $password, $database, $port] = $mysql ? self::mysqlArgs() : self::postgresArgs();
 
-        return SqlConnectionFactory::singleSession(new Config([
-            'DB_CONNECTION' => $mysql ? 'mysql' : 'pgsql',
-            'DB_HOST' => $host,
-            'DB_USER' => $user,
-            'DB_PASSWORD' => $password,
-            'DB_NAME' => $database,
-            'DB_PORT' => (string) $port,
-        ]));
+        return SqlConnectionFactory::singleSession(new ConnectionDefinition(
+            dialect: $mysql ? 'mysql' : 'pgsql',
+            host: $host,
+            database: $database,
+            user: $user,
+            password: $password,
+            port: $port,
+        ));
     }
 }

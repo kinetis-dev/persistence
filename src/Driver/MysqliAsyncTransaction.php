@@ -27,8 +27,9 @@ final class MysqliAsyncTransaction extends AbstractTransaction implements MysqlT
         private readonly MysqliAsyncClient $client,
         private readonly mysqli $connection,
         private readonly Closure $releaseConnection,
+        ContainedSqlInstrumentation $instrumentation,
     ) {
-        parent::__construct();
+        parent::__construct($instrumentation);
     }
 
     #[\Override]

@@ -6,9 +6,11 @@ namespace Kinetis\Persistence\Tests\Fixtures;
 
 use Closure;
 use Kinetis\Persistence\Contract\MysqlTransaction;
+use Kinetis\Persistence\Contract\SqlInstrumentation;
 use Kinetis\Persistence\Contract\SqlResult;
 use Kinetis\Persistence\Driver\AbstractTransaction;
 use Kinetis\Persistence\Driver\BufferedSqlResult;
+use Kinetis\Persistence\Driver\ContainedSqlInstrumentation;
 use Kinetis\Persistence\Driver\PreflightedQuery;
 use Kinetis\Persistence\Exception\QueryException;
 use Throwable;
@@ -78,9 +80,9 @@ class FakeDriverTransaction extends AbstractTransaction implements MysqlTransact
      */
     public bool $terminal = false;
 
-    public function __construct()
+    public function __construct(?SqlInstrumentation $instrumentation = null)
     {
-        parent::__construct();
+        parent::__construct(new ContainedSqlInstrumentation($instrumentation));
     }
 
     #[\Override]

@@ -9,6 +9,7 @@ use Kinetis\Persistence\ConnectionOptions;
 use Kinetis\Persistence\Contract\MysqlLink;
 use Kinetis\Persistence\Contract\MysqlTransaction;
 use Kinetis\Persistence\Contract\PrefersPreparedStatements;
+use Kinetis\Persistence\Contract\SqlInstrumentation;
 use Kinetis\Persistence\Exception\ConnectionException;
 use Kinetis\Persistence\Exception\QueryException;
 use PDO;
@@ -47,8 +48,10 @@ final class PdoMysqlClient implements MysqlLink, PrefersPreparedStatements
         private readonly int $port = 3306,
         ?ConnectionOptions $options = null,
         bool $singleSession = false,
+        ?SqlInstrumentation $instrumentation = null,
     ) {
         $this->singleSession = $singleSession;
+        $this->instrumentation = new ContainedSqlInstrumentation($instrumentation);
 
         // applicationName is a Postgres concept.
         $this->options = $options ?? new ConnectionOptions();
@@ -67,7 +70,7 @@ final class PdoMysqlClient implements MysqlLink, PrefersPreparedStatements
         /** @var PdoMysqlTransaction */
         return $this->startPdoTransaction(
             fn (PDO $pdo, PdoStatementCache $statements, Closure $endOwnership): PdoTransaction
-                => new PdoMysqlTransaction($pdo, $statements, $this->buildResult(...), $endOwnership),
+                => new PdoMysqlTransaction($pdo, $statements, $this->buildResult(...), $endOwnership, $this->instrumentation),
         );
     }
 

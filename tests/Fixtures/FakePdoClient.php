@@ -7,7 +7,9 @@ namespace Kinetis\Persistence\Tests\Fixtures;
 use Closure;
 use Kinetis\Persistence\Contract\MysqlLink;
 use Kinetis\Persistence\Contract\MysqlTransaction;
+use Kinetis\Persistence\Contract\SqlInstrumentation;
 use Kinetis\Persistence\Driver\BufferedSqlResult;
+use Kinetis\Persistence\Driver\ContainedSqlInstrumentation;
 use Kinetis\Persistence\Driver\PdoExecutionTrait;
 use Kinetis\Persistence\Driver\PdoMysqlTransaction;
 use Kinetis\Persistence\Driver\PdoStatementCache;
@@ -38,23 +40,27 @@ final class FakePdoClient implements MysqlLink
     use PdoExecutionTrait;
 
     /** @param Closure(): PDO $open */
-    public function __construct(private readonly Closure $open, bool $singleSession = false)
-    {
+    public function __construct(
+        private readonly Closure $open,
+        bool $singleSession = false,
+        ?SqlInstrumentation $instrumentation = null,
+    ) {
         $this->singleSession = $singleSession;
+        $this->instrumentation = new ContainedSqlInstrumentation($instrumentation);
     }
 
     /**
      * A client over a fresh in-memory database per session, each with
      * the `items` table the ownership tests write to.
      */
-    public static function overSqlite(bool $singleSession = false): self
+    public static function overSqlite(bool $singleSession = false, ?SqlInstrumentation $instrumentation = null): self
     {
         return new self(static function (): PDO {
             $pdo = new PDO('sqlite::memory:', options: [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]);
             $pdo->exec('CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT)');
 
             return $pdo;
-        }, $singleSession);
+        }, $singleSession, $instrumentation);
     }
 
     /** The handle this client is on right now, opening one if it has none. */
@@ -69,7 +75,7 @@ final class FakePdoClient implements MysqlLink
         /** @var PdoMysqlTransaction */
         return $this->startPdoTransaction(
             fn (PDO $pdo, PdoStatementCache $statements, Closure $endOwnership): PdoTransaction
-                => new PdoMysqlTransaction($pdo, $statements, $this->buildResult(...), $endOwnership),
+                => new PdoMysqlTransaction($pdo, $statements, $this->buildResult(...), $endOwnership, $this->instrumentation),
         );
     }
 

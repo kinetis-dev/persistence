@@ -8,8 +8,8 @@ use InvalidArgumentException;
 
 /**
  * The canonical, driver-neutral connection option set. One instance is
- * built by {@see SqlConnectionFactory} from Config's discrete DB_* keys
- * and handed to whichever driver gets constructed — each driver owns
+ * carried by a {@see ConnectionDefinition} and handed to whichever
+ * driver {@see SqlConnectionFactory} constructs — each driver owns
  * the translation from these canonical fields to its native mechanism
  * (connection-string keys for libpq, mysqli_options()/set_charset() for
  * mysqli, DSN keys and attributes for PDO).

@@ -4,11 +4,11 @@ declare(strict_types=1);
 
 namespace Kinetis\Persistence\Driver;
 
-use Kinetis\Instrumentation\Telemetry;
 use Closure;
 use Kinetis\Persistence\ConnectionOptions;
 use Kinetis\Persistence\Contract\MysqlLink;
 use Kinetis\Persistence\Contract\MysqlTransaction;
+use Kinetis\Persistence\Contract\SqlInstrumentation;
 use Kinetis\Persistence\Contract\SqlResult;
 use Kinetis\Persistence\Exception\ConnectionException;
 use Kinetis\Persistence\Exception\QueryException;
@@ -30,7 +30,7 @@ use Throwable;
  * under FrankenPHP, a separate process under RoadRunner — and its
  * connections are reused across requests. It works under PHP-FPM too,
  * but there {@see PdoMysqlClient} is the better fit — see
- * SqlConnectionFactory::fromConfig()'s driver selection.
+ * SqlConnectionFactory's driver selection.
  *
  * Event-loop integration: mysqli does not expose its socket file
  * descriptor, so its connections cannot be watched by Revolt directly.
@@ -130,6 +130,8 @@ final class MysqliAsyncClient implements MysqlLink
     /** Which Fibers hold a transaction on this client — see {@see FiberTransactions}. */
     private readonly FiberTransactions $transactions;
 
+    private readonly ContainedSqlInstrumentation $instrumentation;
+
     public function __construct(
         private readonly string $host,
         private readonly string $user,
@@ -137,7 +139,9 @@ final class MysqliAsyncClient implements MysqlLink
         private readonly string $database,
         private readonly int $port = 3306,
         ?ConnectionOptions $options = null,
+        ?SqlInstrumentation $instrumentation = null,
     ) {
+        $this->instrumentation = new ContainedSqlInstrumentation($instrumentation);
         $this->options = $options ?? new ConnectionOptions();
         // applicationName is a Postgres concept.
         $this->options->rejectUnsupported('native mysqli', ['applicationName']);
@@ -235,7 +239,7 @@ final class MysqliAsyncClient implements MysqlLink
             return new MysqliAsyncTransaction($this, $connection, function (mysqli $connection, bool $discard) use ($owner): void {
                 $this->transactions->close($owner);
                 $this->release($connection, $discard);
-            });
+            }, $this->instrumentation);
         }
     }
 
@@ -276,8 +280,7 @@ final class MysqliAsyncClient implements MysqlLink
      */
     private function runPooled(string $sql, Closure $operation): SqlResult
     {
-        $telemetry = Telemetry::global();
-        $token = $telemetry->queryDispatched('mysql', $sql);
+        $token = $this->instrumentation->queryDispatched('mysql', $sql);
 
         try {
             for ($attempt = 0; ; $attempt++) {
@@ -285,11 +288,11 @@ final class MysqliAsyncClient implements MysqlLink
                 // The gap between queryDispatched and here is time spent
                 // waiting for a free pooled connection. Fires again on a
                 // stale-connection retry, marking the second attempt.
-                $telemetry->queryServerStarted($token);
+                $this->instrumentation->queryServerStarted($token);
 
                 try {
                     $result = $operation($connection);
-                    $telemetry->queryReaped($token, null);
+                    $this->instrumentation->queryReaped($token, null);
 
                     return $result;
                 } catch (StaleConnectionException $e) {
@@ -303,7 +306,7 @@ final class MysqliAsyncClient implements MysqlLink
                 }
             }
         } catch (Throwable $e) {
-            $telemetry->queryReaped($token, $e);
+            $this->instrumentation->queryReaped($token, $e);
 
             throw $e;
         }

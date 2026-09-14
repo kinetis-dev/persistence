@@ -6,7 +6,6 @@ namespace Kinetis\Persistence\Driver;
 
 use Closure;
 use InvalidArgumentException;
-use Kinetis\Instrumentation\Telemetry;
 use Kinetis\Persistence\Contract\MysqlLink;
 use Kinetis\Persistence\Contract\SqlTransaction;
 use Throwable;
@@ -78,6 +77,9 @@ trait PdoExecutionTrait
      * {@see \Kinetis\Persistence\SqlConnectionFactory::singleSession()}.
      */
     private bool $singleSession = false;
+
+    /** Set by the client's constructor; its transactions report through it too. */
+    private readonly ContainedSqlInstrumentation $instrumentation;
 
     /**
      * The pre-flight every execute() passes before this client does
@@ -190,8 +192,8 @@ trait PdoExecutionTrait
     }
 
     /**
-     * Runs one statement inside its telemetry span. Building the result
-     * is part of it: a later result set can carry the server's own
+     * Runs one statement inside its instrumentation span. Building the
+     * result is part of it: a later result set can carry the server's own
      * error, so the span records a success only once the whole result
      * exists, and every PDO failure along the way reaches the caller as
      * this package's own exception.
@@ -200,26 +202,25 @@ trait PdoExecutionTrait
      */
     private function inSpan(string $sql, Closure $statement): SqlResult
     {
-        $telemetry = Telemetry::global();
-        $token = $telemetry->queryDispatched($this instanceof MysqlLink ? 'mysql' : 'postgresql', $sql);
+        $token = $this->instrumentation->queryDispatched($this instanceof MysqlLink ? 'mysql' : 'postgresql', $sql);
         // A single blocking connection: dispatch and server start are the
         // same moment here.
-        $telemetry->queryServerStarted($token);
+        $this->instrumentation->queryServerStarted($token);
 
         try {
             $result = $statement();
         } catch (PDOException $e) {
             $failure = new QueryException($e->getMessage(), $sql, $e, PdoError::vendorCode($e), PdoError::sqlState($e));
-            $telemetry->queryReaped($token, $failure);
+            $this->instrumentation->queryReaped($token, $failure);
 
             throw $failure;
         } catch (Throwable $e) {
-            $telemetry->queryReaped($token, $e);
+            $this->instrumentation->queryReaped($token, $e);
 
             throw $e;
         }
 
-        $telemetry->queryReaped($token, null);
+        $this->instrumentation->queryReaped($token, null);
 
         return $result;
     }

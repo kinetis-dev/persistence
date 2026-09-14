@@ -6,7 +6,7 @@ namespace Kinetis\Persistence\Driver;
 
 /**
  * The parameter pre-flight every driver runs as the first thing
- * `execute()` does — ahead of its telemetry span, its connection pool,
+ * `execute()` does — ahead of its instrumentation span, its connection pool,
  * the connection itself, the prepared-statement memo and any session or
  * server state. Keying, count and value kind are all decided here
  * ({@see SqlParamInterpolator::assertPositionalKeys()},

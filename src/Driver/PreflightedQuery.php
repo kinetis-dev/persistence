@@ -11,8 +11,8 @@ namespace Kinetis\Persistence\Driver;
  * value contract.
  *
  * Carrying the outcome of the pre-flight rather than re-deriving it is
- * what lets the pre-flight run first. A driver reaches its telemetry
- * span, its pool, its connection and its prepare with this object
+ * what lets the pre-flight run first. A driver reaches its
+ * instrumentation span, its pool, its connection and its prepare with this object
  * already in hand, so the only work left at dispatch is encoding values
  * a check has already accepted — never deciding whether to accept them.
  *

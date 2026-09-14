@@ -24,8 +24,9 @@ final class PgsqlAsyncTransaction extends AbstractTransaction implements Postgre
         private readonly PgsqlAsyncClient $client,
         private readonly PgsqlAsyncConnection $connection,
         private readonly Closure $releaseConnection,
+        ContainedSqlInstrumentation $instrumentation,
     ) {
-        parent::__construct();
+        parent::__construct($instrumentation);
     }
 
     #[\Override]

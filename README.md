@@ -5,7 +5,7 @@
 <p align="center">
   <strong>kinetis/persistence</strong>
   <br>
-  <strong>Request-scoped SQL transaction safety net and connection factory for Kinetis</strong>
+  <strong>Runtime-matched MySQL and Postgres clients with a transaction safety net</strong>
 </p>
 
 <p align="center">
@@ -21,6 +21,7 @@
 Part of [Kinetis](https://kinetis.dev/), a non-blocking PHP framework for
 API-first applications, developed in the
 [kinetis-dev/kinetis](https://github.com/kinetis-dev/kinetis) monorepo.
+Usable standalone: it depends on no Kinetis package.
 
 MySQL and Postgres through runtime-matched drivers — native
 `ext-mysqli`/`ext-pgsql` async clients under a persistent worker, PDO
@@ -29,86 +30,90 @@ under boot-and-die — all presenting this package's own
 above the driver needs to know which one it's talking to.
 
 ```php
+use Kinetis\Persistence\ConnectionDefinition;
 use Kinetis\Persistence\Contract\SqlTransaction;
 use Kinetis\Persistence\SqlConnectionFactory;
 use Kinetis\Persistence\TransactionGuard;
 
-$db = SqlConnectionFactory::fromConfig($config);
+$db = SqlConnectionFactory::create(new ConnectionDefinition(
+    dialect: 'mysql',
+    host: 'db.internal',
+    database: 'shop',
+    user: 'shop',
+    password: $password,
+));
+
+// One guard per unit of work: a request, a job, a command.
 $guard = new TransactionGuard($logger);
 
-$guard->transaction($db, static function (SqlTransaction $tx): void {
-    $tx->execute('UPDATE inventory SET stock = stock - 1 WHERE sku = ?', ['SKU-1']);
-});
+try {
+    $guard->transaction($db, static function (SqlTransaction $tx): void {
+        $tx->execute('UPDATE inventory SET stock = stock - 1 WHERE sku = ?', ['SKU-1']);
+    });
+} finally {
+    $guard->rollbackDangling();
+}
 ```
 
-`SqlConnectionFactory::fromConfig()` builds a runtime-matched driver
-client from `Kinetis\Config` (the `DB_*` keys below, or their
-`DB_{NAME}_*` named-connection equivalents), bound under
-`Contract\MysqlLink`/`Contract\PostgresLink` automatically once
-`DB_CONNECTION` is set — this package's bootstrap registers it before
-the application's own `bootstrap.php`, which wins on the same binding.
+`ConnectionDefinition` holds the dialect (`mysql` or `pgsql`), the
+driver selection, host, port (the dialect's own by default), database,
+credentials, `ConnectionOptions` — charset, TLS, connect timeout, pool
+width — and how many connections to open at construction.
+`SqlConnectionFactory::create()` builds the client its driver selection
+names: `native` (mysqli or ext-pgsql async), `pdo`, or `auto` — native
+under FrankenPHP worker mode or RoadRunner, PDO everywhere else.
+`SqlConnectionFactory::singleSession()` builds a PDO client pinned to
+the first session it opens, which closes instead of reconnecting if that
+session is lost: the client for work that lives in the session, such as
+a session-scoped advisory lock.
 
-`TransactionGuard` is the Kinetis-specific piece: request-scoped,
-autowired fresh per `RequestScope` like any other unregistered class,
-tracking every transaction it starts so a request that throws before
-committing or rolling back doesn't leak an open transaction into
-whatever the pooled connection is reused for next. Every entry point
-that owns a `RequestScope` for one unit of work — HTTP, the CLI, MCP
-over stdio, and a queue worker's jobs — wires `rollbackDangling()` into
-that scope's disposal automatically whenever this package is installed;
-it is a no-op for a unit of work that never opens a transaction.
+## What the host owns
 
-Optional: an application with no database at all can skip this package
-entirely — `Kinetis\Http\Kernel` degrades gracefully (`class_exists()`
-check, no dispose hook registered) when it isn't installed.
+- **A guard per unit of work.** `TransactionGuard::transaction()`
+  commits on success and rolls back on any throw. A transaction begun
+  with the guard's own `beginTransaction()` and held open across calls is
+  tracked until the unit of work ends, where the host calls
+  `rollbackDangling()` — from a `finally`, so it runs whether the work
+  returned or threw. It closes every tracked transaction still open,
+  logs a warning for each, and rethrows the first cleanup failure once
+  all have been attempted. A guard is never shared between units of
+  work.
+- **A client per connection for the process's lifetime.** The async
+  clients are connection pools: build each once at startup and reuse it
+  across units of work. Under a persistent worker, warm the mysqli pool
+  at startup (`warmConnections`); see the documentation for why.
+- **Closing clients at shutdown.** `close()` takes a client out of
+  service and ends the connections it holds; every later call throws
+  `Exception\ConnectionException`. Call it when the process stops using
+  the client.
 
-## Provides
+## Instrumentation
 
-Installing this package is what opts it in — it registers the
-following automatically, through the `extra.kinetis` declaration in its
-`composer.json` (see
-[kinetis.dev/docs/cli.html](https://kinetis.dev/docs/cli.html)):
+Pass a `Contract\SqlInstrumentation` as either factory method's second
+argument to receive what every client and transaction reports: a query
+dispatched, sent to the server, and reaped; a transaction started, and
+ended as `commit`, `rollback` or `unknown`. A client contains any failure
+its instrumentation throws, so instrumentation cannot change a query
+result, a transaction outcome or the release of a connection.
 
-- **Service binding**: with `DB_CONNECTION` set, the default connection
-  is built and bound under its dialect contract
-  (`Kinetis\Persistence\Contract\MysqlLink` or
-  `Contract\PostgresLink`) before your own `bootstrap.php` runs — your
-  registration wins on the same binding. Inert when `DB_CONNECTION` is
-  unset.
+Every moment runs inline on the query's Fiber: an implementation must not
+suspend, must stay bounded, and must perform no blocking I/O — anything
+it exports goes to separately owned, bounded infrastructure. A client
+keeps its instrumentation for its whole lifetime, so the implementation
+holds no mutable request or unit-of-work state. `queryDispatched()`
+receives the complete SQL text; bound parameter values are never passed,
+but the text can carry literals, so never log or export it verbatim.
 
-Nothing else — no commands, routes, middleware, event listeners, or
-MCP tools.
+## With Kinetis
 
-## Configuration
+```sh
+composer require kinetis/database-bridge
+```
 
-Read from the environment (or `.env`) via `Kinetis\Config`. Every key
-is scoped.
-
-| Key | Default | Purpose |
-|---|---|---|
-| `DB_CONNECTION` | *(required)* | `mysql` or `pgsql`. |
-| `DB_HOST` | `127.0.0.1` | Server host. |
-| `DB_PORT` | `3306` / `5432` | Per dialect. |
-| `DB_NAME` | `app` | Database name. |
-| `DB_USER` | `app` | User. |
-| `DB_PASSWORD` | *(required)* | Password. |
-| `DB_DRIVER` | `auto` | `auto` (native under FrankenPHP worker mode or RoadRunner, PDO otherwise), `native`, or `pdo`. |
-| `DB_CHARSET` | `utf8mb4` (MySQL) | Connection charset. |
-| `DB_COLLATION` | — | MySQL collation (`SET NAMES ... COLLATE`). |
-| `DB_SSLMODE` | — | `disable`/`require`/`verify-ca`/`verify-full` on every driver; libpq additionally accepts `allow`/`prefer`. |
-| `DB_SSL_CA` | — | CA bundle path for the verify modes. |
-| `DB_SSL_CERT` | — | Client certificate for mutual TLS; requires `DB_SSL_KEY`. |
-| `DB_SSL_KEY` | — | Client private key; requires `DB_SSL_CERT`. Postgres requires `0600` permissions. |
-| `DB_CONNECT_TIMEOUT` | — | Seconds. |
-| `DB_APP_NAME` | — | Postgres `application_name`. |
-| `DB_COMPRESSION` | — | MySQL protocol compression. |
-| `DB_MAX_CONNECTIONS` | `8` | Async drivers' pool width — per worker thread under FrankenPHP, per worker process under RoadRunner. |
-| `DB_WARM_CONNECTIONS` | `0` | Connections opened at boot instead of first use — load-bearing for the mysqli driver under worker mode. |
-
-Scoped keys follow the named-connection convention — the connection
-name inserts after the first segment: `DB_HOST` + `reporting` → `DB_REPORTING_HOST`.
-Full reference across every package:
-[kinetis.dev/docs/config.html](https://kinetis.dev/docs/config.html).
+[`kinetis/database-bridge`](https://github.com/kinetis-dev/database-bridge)
+builds the clients from `DB_*` configuration, binds the default
+connection, provides lazy request-scoped `TransactionGuard` cleanup, and
+reports through Kinetis telemetry.
 
 ## Installation
 
@@ -116,9 +121,9 @@ Full reference across every package:
 composer require kinetis/persistence
 ```
 
-Requires PHP 8.4+ and [`kinetis/framework`](https://github.com/kinetis-dev/framework),
-plus the extension for the driver you use: `ext-mysqli`, `ext-pgsql`
-(with `ext-sockets`), `ext-pdo_mysql` or `ext-pdo_pgsql`. Full documentation:
+Requires PHP 8.4+, plus the extension for the driver you use:
+`ext-mysqli`, `ext-pgsql` (with `ext-sockets`), `ext-pdo_mysql` or
+`ext-pdo_pgsql`. Full documentation:
 [kinetis.dev/docs/persistence.html](https://kinetis.dev/docs/persistence.html).
 
 ## License

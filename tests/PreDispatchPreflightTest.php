@@ -5,9 +5,7 @@ declare(strict_types=1);
 namespace Kinetis\Persistence\Tests;
 
 use ArrayObject;
-use Kinetis\Instrumentation\NullTelemetry;
-use Kinetis\Instrumentation\Telemetry;
-use Kinetis\Instrumentation\TelemetryInterface;
+use Kinetis\Persistence\Contract\SqlInstrumentation;
 use Kinetis\Persistence\Contract\SqlLink;
 use Kinetis\Persistence\Driver\MysqliAsyncClient;
 use Kinetis\Persistence\Driver\PdoMysqlClient;
@@ -27,25 +25,15 @@ use ReflectionProperty;
  * The clients here are cold — constructed, never connected, pointed at a
  * port nothing answers on — which is the state that separates a
  * pre-dispatch check from one performed on the way through execution. A
- * driver validating any later would open a telemetry span for a query it
- * was never going to send, wait for a pooled connection, and connect;
- * against an unreachable server it would surface a ConnectionException
- * rather than the QueryException the mistake actually is, so the same
- * argument list would be reported differently depending on whether the
- * pool happened to be warm.
+ * driver validating any later would open an instrumentation span for a
+ * query it was never going to send, wait for a pooled connection, and
+ * connect; against an unreachable server it would surface a
+ * ConnectionException rather than the QueryException the mistake
+ * actually is, so the same argument list would be reported differently
+ * depending on whether the pool happened to be warm.
  */
 final class PreDispatchPreflightTest extends TestCase
 {
-    /**
-     * The telemetry holder is worker-lifetime configuration, so a spy
-     * installed for one case has to come back off for the next.
-     */
-    #[\Override]
-    protected function tearDown(): void
-    {
-        Telemetry::global()->swap(new NullTelemetry());
-    }
-
     /**
      * All four drivers, each named the way DriverCase names it.
      *
@@ -62,8 +50,8 @@ final class PreDispatchPreflightTest extends TestCase
     #[DataProvider('coldClients')]
     public function test_a_cold_client_refuses_an_invalid_call_before_it_connects(string $driver): void
     {
-        $client = self::coldClient($driver);
-        $hooks = $this->recordTelemetry();
+        [$moments, $instrumentation] = $this->recordingInstrumentation();
+        $client = self::coldClient($driver, $instrumentation);
 
         try {
             $client->execute('SELECT ?, ?', [1]);
@@ -72,7 +60,7 @@ final class PreDispatchPreflightTest extends TestCase
             self::assertSame('Query has 2 "?" placeholders but 1 parameter was given', $e->getMessage());
         }
 
-        self::assertSame([], $hooks->getArrayCopy(), "{$driver} reported a query it never sent.");
+        self::assertSame([], $moments->getArrayCopy(), "{$driver} reported a query it never sent.");
         self::assertNothingWasOpened($driver, $client);
         self::assertFalse($client->isClosed(), "{$driver} closed itself over a refused call.");
     }
@@ -88,8 +76,8 @@ final class PreDispatchPreflightTest extends TestCase
      */
     public function test_a_transaction_refuses_an_invalid_call_before_any_subclass_dispatch(): void
     {
-        $transaction = new FakeDriverTransaction();
-        $hooks = $this->recordTelemetry();
+        [$moments, $instrumentation] = $this->recordingInstrumentation();
+        $transaction = new FakeDriverTransaction($instrumentation);
 
         try {
             $transaction->execute('SELECT ?, ?', [1]);
@@ -99,7 +87,7 @@ final class PreDispatchPreflightTest extends TestCase
         }
 
         self::assertSame(0, $transaction->dispatches, 'A refused call reached the pinned connection.');
-        self::assertSame([], $hooks->getArrayCopy(), 'The transaction reported a query it never sent.');
+        self::assertSame(['transactionStarted'], $moments->getArrayCopy(), 'The transaction reported a query it never sent.');
         self::assertTrue($transaction->isActive(), 'A refused call closed the transaction.');
     }
 
@@ -119,16 +107,16 @@ final class PreDispatchPreflightTest extends TestCase
     }
 
     /** A client that has been constructed and has never connected. */
-    private static function coldClient(string $driver): SqlLink
+    private static function coldClient(string $driver, SqlInstrumentation $instrumentation): SqlLink
     {
         // Port 1 answers nothing, so a connection attempt would be a
         // visible failure rather than a silent success — though the
         // point of every case here is that none is ever made.
         return match ($driver) {
-            'pdo-mysql' => new PdoMysqlClient('127.0.0.1', 'user', 'password', 'db', 1),
-            'pdo-pgsql' => new PdoPgsqlClient('127.0.0.1', 'user', 'password', 'db', 1),
-            'mysqli-async' => new MysqliAsyncClient('127.0.0.1', 'user', 'password', 'db', 1),
-            'pgsql-async' => new PgsqlAsyncClient('127.0.0.1', 'user', 'password', 'db', 1),
+            'pdo-mysql' => new PdoMysqlClient('127.0.0.1', 'user', 'password', 'db', 1, instrumentation: $instrumentation),
+            'pdo-pgsql' => new PdoPgsqlClient('127.0.0.1', 'user', 'password', 'db', 1, instrumentation: $instrumentation),
+            'mysqli-async' => new MysqliAsyncClient('127.0.0.1', 'user', 'password', 'db', 1, instrumentation: $instrumentation),
+            'pgsql-async' => new PgsqlAsyncClient('127.0.0.1', 'user', 'password', 'db', 1, instrumentation: $instrumentation),
         };
     }
 
@@ -161,30 +149,28 @@ final class PreDispatchPreflightTest extends TestCase
     }
 
     /**
-     * Installs a telemetry backend recording, by name, every hook this
-     * package emits, and returns the record for the case to assert on.
-     * Recording rather than refusing outright: Telemetry contains a
-     * throwing backend by design, so an expectation raised from inside a
-     * hook would be swallowed there instead of failing the case.
+     * An instrumentation recording, by name, every moment a driver
+     * reports, with the record for the case to assert on. Recording
+     * rather than refusing outright: the driver contains a throwing
+     * instrumentation by design, so an expectation raised from inside a
+     * moment would be swallowed there instead of failing the case.
      *
-     * @return ArrayObject<int, string>
+     * @return array{ArrayObject<int, string>, SqlInstrumentation}
      */
-    private function recordTelemetry(): ArrayObject
+    private function recordingInstrumentation(): array
     {
-        /** @var ArrayObject<int, string> $hooks */
-        $hooks = new ArrayObject();
-        $telemetry = $this->createStub(TelemetryInterface::class);
+        /** @var ArrayObject<int, string> $moments */
+        $moments = new ArrayObject();
+        $instrumentation = $this->createStub(SqlInstrumentation::class);
 
-        foreach (['queryDispatched', 'queryServerStarted', 'queryReaped', 'transactionStarted', 'transactionEnded'] as $hook) {
-            $telemetry->method($hook)->willReturnCallback(static function () use ($hooks, $hook): mixed {
-                $hooks[] = $hook;
+        foreach (['queryDispatched', 'queryServerStarted', 'queryReaped', 'transactionStarted', 'transactionEnded'] as $moment) {
+            $instrumentation->method($moment)->willReturnCallback(static function () use ($moments, $moment): mixed {
+                $moments[] = $moment;
 
                 return null;
             });
         }
 
-        Telemetry::global()->swap($telemetry);
-
-        return $hooks;
+        return [$moments, $instrumentation];
     }
 }

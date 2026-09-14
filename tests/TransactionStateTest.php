@@ -5,9 +5,7 @@ declare(strict_types=1);
 namespace Kinetis\Persistence\Tests;
 
 use Fiber;
-use Kinetis\Instrumentation\NullTelemetry;
-use Kinetis\Instrumentation\Telemetry;
-use Kinetis\Instrumentation\TelemetryInterface;
+use Kinetis\Persistence\Contract\SqlInstrumentation;
 use Kinetis\Persistence\Driver\MysqlLockFailure;
 use Kinetis\Persistence\Exception\ConnectionException;
 use Kinetis\Persistence\Exception\QueryException;
@@ -23,15 +21,6 @@ use Throwable;
  */
 final class TransactionStateTest extends TestCase
 {
-    /**
-     * The telemetry holder is a per-process singleton, so a test that
-     * swapped a recording backend in must put the default one back.
-     */
-    protected function tearDown(): void
-    {
-        Telemetry::global()->swap(new NullTelemetry());
-    }
-
     public function test_a_foreign_fiber_cannot_run_statements(): void
     {
         $transaction = new FakeDriverTransaction();
@@ -121,12 +110,11 @@ final class TransactionStateTest extends TestCase
      */
     public function test_a_failing_finish_ends_and_discards_the_connection(): void
     {
-        $telemetry = $this->createMock(TelemetryInterface::class);
-        $telemetry->method('transactionStarted')->willReturn('token');
-        $telemetry->expects(self::once())->method('transactionEnded')->with('token', 'unknown');
-        Telemetry::global()->swap($telemetry);
+        $instrumentation = $this->createMock(SqlInstrumentation::class);
+        $instrumentation->method('transactionStarted')->willReturn('token');
+        $instrumentation->expects(self::once())->method('transactionEnded')->with('token', 'unknown');
 
-        $transaction = new FakeDriverTransaction();
+        $transaction = new FakeDriverTransaction($instrumentation);
         $transaction->failFinish = new TransactionException('Commit failed');
 
         try {
@@ -147,12 +135,11 @@ final class TransactionStateTest extends TestCase
      */
     public function test_a_failing_release_is_reported(): void
     {
-        $telemetry = $this->createMock(TelemetryInterface::class);
-        $telemetry->method('transactionStarted')->willReturn('token');
-        $telemetry->expects(self::once())->method('transactionEnded')->with('token', 'commit');
-        Telemetry::global()->swap($telemetry);
+        $instrumentation = $this->createMock(SqlInstrumentation::class);
+        $instrumentation->method('transactionStarted')->willReturn('token');
+        $instrumentation->expects(self::once())->method('transactionEnded')->with('token', 'commit');
 
-        $transaction = new FakeDriverTransaction();
+        $transaction = new FakeDriverTransaction($instrumentation);
         $transaction->failRelease = new ConnectionException('The pool refused the connection');
 
         try {
@@ -185,12 +172,11 @@ final class TransactionStateTest extends TestCase
      */
     public function test_a_foreign_close_during_a_statement_ends_the_transaction_once(): void
     {
-        $telemetry = $this->createMock(TelemetryInterface::class);
-        $telemetry->method('transactionStarted')->willReturn('token');
-        $telemetry->expects(self::once())->method('transactionEnded')->with('token', 'unknown');
-        Telemetry::global()->swap($telemetry);
+        $instrumentation = $this->createMock(SqlInstrumentation::class);
+        $instrumentation->method('transactionStarted')->willReturn('token');
+        $instrumentation->expects(self::once())->method('transactionEnded')->with('token', 'unknown');
 
-        $transaction = new FakeDriverTransaction();
+        $transaction = new FakeDriverTransaction($instrumentation);
         $transaction->duringDispatch = static function () use ($transaction): void {
             self::inNewFiber(static fn () => $transaction->close());
         };
@@ -316,12 +302,11 @@ final class TransactionStateTest extends TestCase
      */
     public function test_a_statement_failure_that_ended_the_transaction_settles_it(): void
     {
-        $telemetry = $this->createMock(TelemetryInterface::class);
-        $telemetry->method('transactionStarted')->willReturn('token');
-        $telemetry->expects(self::once())->method('transactionEnded')->with('token', 'unknown');
-        Telemetry::global()->swap($telemetry);
+        $instrumentation = $this->createMock(SqlInstrumentation::class);
+        $instrumentation->method('transactionStarted')->willReturn('token');
+        $instrumentation->expects(self::once())->method('transactionEnded')->with('token', 'unknown');
 
-        $transaction = new FakeDriverTransaction();
+        $transaction = new FakeDriverTransaction($instrumentation);
         $transaction->failNextDispatch = new QueryException('Deadlock found when trying to get lock');
         $transaction->duringDispatch = static function () use ($transaction): void {
             $transaction->onConnection = false;
@@ -443,12 +428,11 @@ final class TransactionStateTest extends TestCase
      */
     public function test_a_foreign_close_settles_a_pending_commit_exactly_once(): void
     {
-        $telemetry = $this->createMock(TelemetryInterface::class);
-        $telemetry->method('transactionStarted')->willReturn('token');
-        $telemetry->expects(self::once())->method('transactionEnded')->with('token', 'unknown');
-        Telemetry::global()->swap($telemetry);
+        $instrumentation = $this->createMock(SqlInstrumentation::class);
+        $instrumentation->method('transactionStarted')->willReturn('token');
+        $instrumentation->expects(self::once())->method('transactionEnded')->with('token', 'unknown');
 
-        $transaction = new FakeDriverTransaction();
+        $transaction = new FakeDriverTransaction($instrumentation);
         $stillActive = null;
         $settledByClose = null;
         $transaction->duringFinish = static function () use ($transaction, &$stillActive, &$settledByClose): void {
@@ -509,12 +493,11 @@ final class TransactionStateTest extends TestCase
      */
     public function test_a_terminal_failure_ends_and_discards_the_connection(): void
     {
-        $telemetry = $this->createMock(TelemetryInterface::class);
-        $telemetry->method('transactionStarted')->willReturn('token');
-        $telemetry->expects(self::once())->method('transactionEnded')->with('token', 'unknown');
-        Telemetry::global()->swap($telemetry);
+        $instrumentation = $this->createMock(SqlInstrumentation::class);
+        $instrumentation->method('transactionStarted')->willReturn('token');
+        $instrumentation->expects(self::once())->method('transactionEnded')->with('token', 'unknown');
 
-        $transaction = new FakeDriverTransaction();
+        $transaction = new FakeDriverTransaction($instrumentation);
         $transaction->terminal = true;
         $transaction->failNextDispatch = new QueryException('Lock wait timeout exceeded', 'UPDATE t SET v = 1', null, 1205);
 

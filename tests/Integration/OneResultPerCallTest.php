@@ -4,9 +4,7 @@ declare(strict_types=1);
 
 namespace Kinetis\Persistence\Tests\Integration;
 
-use Kinetis\Instrumentation\NullTelemetry;
-use Kinetis\Instrumentation\Telemetry;
-use Kinetis\Instrumentation\TelemetryInterface;
+use Kinetis\Persistence\Contract\SqlInstrumentation;
 use Kinetis\Persistence\Exception\QueryException;
 
 /**
@@ -22,12 +20,6 @@ use Kinetis\Persistence\Exception\QueryException;
  */
 final class OneResultPerCallTest extends DriverCase
 {
-    /** The telemetry holder is a per-process singleton. */
-    protected function tearDown(): void
-    {
-        Telemetry::global()->swap(new NullTelemetry());
-    }
-
     /**
      * A stored procedure returning a result set leaves the final OK
      * packet unread. next_result() would drain it, but it blocks the
@@ -84,28 +76,36 @@ final class OneResultPerCallTest extends DriverCase
      */
     public function test_pdo_mysql_reports_an_error_in_a_later_result_set(): void
     {
-        $db = self::makeClient('pdo-mysql');
+        // Each statement's SQL is its token, so the reap for the CALL can
+        // be told apart from the setup statements around it.
+        /** @var \ArrayObject<int, array{mixed, ?\Throwable}> $reaped */
+        $reaped = new \ArrayObject();
+        $instrumentation = $this->createStub(SqlInstrumentation::class);
+        $instrumentation->method('queryDispatched')->willReturnCallback(static fn (string $system, string $sql): string => $sql);
+        $instrumentation->method('queryReaped')->willReturnCallback(static function (mixed $token, ?\Throwable $failure) use ($reaped): void {
+            $reaped[] = [$token, $failure];
+        });
+
+        $db = self::makeClient('pdo-mysql', instrumentation: $instrumentation);
         $db->query('DROP PROCEDURE IF EXISTS later_error_probe');
         $db->query(
             'CREATE PROCEDURE later_error_probe() BEGIN SELECT 1 AS n; '
             . "SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'the second result set failed'; END",
         );
 
-        $telemetry = $this->createMock(TelemetryInterface::class);
-        $telemetry->method('queryDispatched')->willReturn('token');
-        $telemetry->expects(self::once())
-            ->method('queryReaped')
-            ->with('token', self::isInstanceOf(QueryException::class));
-        Telemetry::global()->swap($telemetry);
-
         try {
             $db->query('CALL later_error_probe()');
             self::fail('Expected the failing result set to be reported.');
         } catch (QueryException $e) {
             self::assertStringContainsString('the second result set failed', $e->getMessage());
-        } finally {
-            Telemetry::global()->swap(new NullTelemetry());
         }
+
+        $calls = \array_values(\array_filter(
+            $reaped->getArrayCopy(),
+            static fn (array $reap): bool => $reap[0] === 'CALL later_error_probe()',
+        ));
+        self::assertCount(1, $calls);
+        self::assertInstanceOf(QueryException::class, $calls[0][1]);
 
         // The cursor was closed on the way out, so the connection is
         // clean for whatever runs next.

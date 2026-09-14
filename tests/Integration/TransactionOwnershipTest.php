@@ -5,10 +5,8 @@ declare(strict_types=1);
 namespace Kinetis\Persistence\Tests\Integration;
 
 use Fiber;
-use Kinetis\Instrumentation\NullTelemetry;
-use Kinetis\Instrumentation\Telemetry;
-use Kinetis\Instrumentation\TelemetryInterface;
 use Kinetis\Persistence\ConnectionOptions;
+use Kinetis\Persistence\Contract\SqlInstrumentation;
 use Kinetis\Persistence\Contract\SqlLink;
 use Kinetis\Persistence\Contract\SqlTransaction;
 use Kinetis\Persistence\Exception\ConnectionException;
@@ -24,15 +22,6 @@ use Throwable;
  */
 final class TransactionOwnershipTest extends DriverCase
 {
-    /**
-     * The telemetry holder is a per-process singleton, so a test that
-     * swapped a recording backend in must put the default one back.
-     */
-    protected function tearDown(): void
-    {
-        Telemetry::global()->swap(new NullTelemetry());
-    }
-
     /** @return iterable<string, array{string}> */
     public static function mysqlDrivers(): iterable
     {
@@ -491,13 +480,12 @@ final class TransactionOwnershipTest extends DriverCase
      */
     public function test_a_commit_interrupted_from_another_fiber_settles_once_as_unknown(): void
     {
-        $db = self::makeClient('pgsql-async', new ConnectionOptions(maxConnections: 2));
-        self::createSlowCommitTable($db);
+        $instrumentation = $this->createMock(SqlInstrumentation::class);
+        $instrumentation->method('transactionStarted')->willReturn('token');
+        $instrumentation->expects(self::once())->method('transactionEnded')->with('token', 'unknown');
 
-        $telemetry = $this->createMock(TelemetryInterface::class);
-        $telemetry->method('transactionStarted')->willReturn('token');
-        $telemetry->expects(self::once())->method('transactionEnded')->with('token', 'unknown');
-        Telemetry::global()->swap($telemetry);
+        $db = self::makeClient('pgsql-async', new ConnectionOptions(maxConnections: 2), $instrumentation);
+        self::createSlowCommitTable($db);
 
         $transaction = null;
         $caught = null;

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Kinetis\Persistence\Tests\Integration;
 
 use Kinetis\Persistence\ConnectionOptions;
+use Kinetis\Persistence\Contract\SqlInstrumentation;
 use Kinetis\Persistence\Contract\SqlLink;
 use Kinetis\Persistence\Driver\MysqliAsyncClient;
 use Kinetis\Persistence\Driver\PdoMysqlClient;
@@ -38,16 +39,19 @@ abstract class DriverCase extends TestCase
         yield 'pdo-pgsql' => ['pdo-pgsql'];
     }
 
-    protected static function makeClient(string $driver, ?ConnectionOptions $options = null): SqlLink
-    {
+    protected static function makeClient(
+        string $driver,
+        ?ConnectionOptions $options = null,
+        ?SqlInstrumentation $instrumentation = null,
+    ): SqlLink {
         $mysqlArgs = \str_contains($driver, 'mysql') ? self::mysqlArgs() : [];
         $postgresArgs = \str_contains($driver, 'pgsql') ? self::postgresArgs() : [];
 
         return match ($driver) {
-            'mysqli-async' => new MysqliAsyncClient(...[...$mysqlArgs, $options ?? new ConnectionOptions(maxConnections: 4)]),
-            'pdo-mysql' => new PdoMysqlClient(...[...$mysqlArgs, $options]),
-            'pgsql-async' => new PgsqlAsyncClient(...[...$postgresArgs, $options ?? new ConnectionOptions(maxConnections: 4)]),
-            'pdo-pgsql' => new PdoPgsqlClient(...[...$postgresArgs, $options]),
+            'mysqli-async' => new MysqliAsyncClient(...$mysqlArgs, options: $options ?? new ConnectionOptions(maxConnections: 4), instrumentation: $instrumentation),
+            'pdo-mysql' => new PdoMysqlClient(...$mysqlArgs, options: $options, instrumentation: $instrumentation),
+            'pgsql-async' => new PgsqlAsyncClient(...$postgresArgs, options: $options ?? new ConnectionOptions(maxConnections: 4), instrumentation: $instrumentation),
+            'pdo-pgsql' => new PdoPgsqlClient(...$postgresArgs, options: $options, instrumentation: $instrumentation),
         };
     }
 

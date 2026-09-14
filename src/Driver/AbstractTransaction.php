@@ -6,7 +6,6 @@ namespace Kinetis\Persistence\Driver;
 
 use Closure;
 use Fiber;
-use Kinetis\Instrumentation\Telemetry;
 use Kinetis\Persistence\Contract\MysqlTransaction;
 use Kinetis\Persistence\Contract\PostgresTransaction;
 use Kinetis\Persistence\Contract\SqlResult;
@@ -25,8 +24,8 @@ use Throwable;
  * other Fiber: the connection carries one statement at a time, so a
  * second Fiber dispatching on it corrupts both. close() is the
  * lifecycle escape hatch and is callable from anywhere — it is what
- * `TransactionGuard::rollbackDangling()` runs at request-scope
- * disposal, where the owner Fiber may be parked or gone.
+ * `TransactionGuard::rollbackDangling()` runs when the host's unit of
+ * work ends, where the owner Fiber may be parked or gone.
  *
  * Two flags, because they change at different moments:
  *
@@ -84,7 +83,7 @@ abstract class AbstractTransaction implements SqlTransaction
      */
     private bool $aborted = false;
 
-    private mixed $telemetryToken = null;
+    private mixed $instrumentationToken = null;
 
     /** Built on first use: a transaction with no bound parameters needs none. */
     private ?SqlParamPreflight $preflight = null;
@@ -93,11 +92,15 @@ abstract class AbstractTransaction implements SqlTransaction
      * Records the owning Fiber and the begin moment for instrumentation.
      * Every concrete constructor calls this, since PHP never runs a
      * parent constructor implicitly.
+     *
+     * @param ContainedSqlInstrumentation $instrumentation The owning
+     *     client's, so a transaction reports where its client does.
      */
-    protected function __construct()
-    {
+    protected function __construct(
+        private readonly ContainedSqlInstrumentation $instrumentation,
+    ) {
         $this->owner = Fiber::getCurrent();
-        $this->telemetryToken = Telemetry::global()->transactionStarted(
+        $this->instrumentationToken = $this->instrumentation->transactionStarted(
             $this instanceof MysqlTransaction ? 'mysql' : 'postgresql',
         );
     }
@@ -468,7 +471,7 @@ abstract class AbstractTransaction implements SqlTransaction
         try {
             $this->release($discard);
         } finally {
-            Telemetry::global()->transactionEnded($this->telemetryToken, $outcome);
+            $this->instrumentation->transactionEnded($this->instrumentationToken, $outcome);
         }
     }
 

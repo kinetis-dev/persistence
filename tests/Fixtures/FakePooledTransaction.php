@@ -9,6 +9,7 @@ use Kinetis\Persistence\Contract\MysqlTransaction;
 use Kinetis\Persistence\Contract\SqlResult;
 use Kinetis\Persistence\Driver\AbstractTransaction;
 use Kinetis\Persistence\Driver\BufferedSqlResult;
+use Kinetis\Persistence\Driver\ContainedSqlInstrumentation;
 use Kinetis\Persistence\Driver\PreflightedQuery;
 use stdClass;
 
@@ -31,8 +32,9 @@ final class FakePooledTransaction extends AbstractTransaction implements MysqlTr
         private readonly FakePooledClient $client,
         private readonly stdClass $connection,
         private readonly Closure $releaseConnection,
+        ContainedSqlInstrumentation $instrumentation,
     ) {
-        parent::__construct();
+        parent::__construct($instrumentation);
     }
 
     #[\Override]

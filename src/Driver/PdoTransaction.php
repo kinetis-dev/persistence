@@ -64,13 +64,14 @@ abstract class PdoTransaction extends AbstractTransaction
         PdoStatementCache $statements,
         Closure $buildResult,
         Closure $endOwnership,
+        ContainedSqlInstrumentation $instrumentation,
     ) {
         $this->pdo = $pdo;
         $this->statements = $statements;
         $this->buildResult = $buildResult;
         $this->endOwnership = $endOwnership;
 
-        parent::__construct();
+        parent::__construct($instrumentation);
     }
 
     #[\Override]

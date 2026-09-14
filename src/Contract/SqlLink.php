@@ -47,7 +47,7 @@ interface SqlLink
      * finite float or a string. Any other keying, any count other than
      * one argument per placeholder, and any other value kind throw
      * Exception\QueryException on every driver — from a pre-flight that
-     * runs before the implementation opens a telemetry span, takes a
+     * runs before the implementation opens an instrumentation span, takes a
      * connection from its pool, opens one, configures it, or prepares
      * anything, so a refused call reaches no server and opens nothing
      * to reach one with.

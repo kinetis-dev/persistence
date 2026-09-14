@@ -5,10 +5,10 @@ declare(strict_types=1);
 namespace Kinetis\Persistence\Driver;
 
 use Closure;
-use Kinetis\Instrumentation\Telemetry;
 use Kinetis\Persistence\ConnectionOptions;
 use Kinetis\Persistence\Contract\PostgresLink;
 use Kinetis\Persistence\Contract\PostgresTransaction;
+use Kinetis\Persistence\Contract\SqlInstrumentation;
 use Kinetis\Persistence\Contract\SqlResult;
 use Kinetis\Persistence\Exception\ConnectionException;
 use Kinetis\Persistence\Exception\QueryException;
@@ -110,6 +110,8 @@ final class PgsqlAsyncClient implements PostgresLink
     /** Which Fibers hold a transaction on this client — see {@see FiberTransactions}. */
     private readonly FiberTransactions $transactions;
 
+    private readonly ContainedSqlInstrumentation $instrumentation;
+
     public function __construct(
         private readonly string $host,
         private readonly string $user,
@@ -117,7 +119,10 @@ final class PgsqlAsyncClient implements PostgresLink
         private readonly string $database,
         private readonly int $port = 5432,
         ?ConnectionOptions $options = null,
+        ?SqlInstrumentation $instrumentation = null,
     ) {
+        $this->instrumentation = new ContainedSqlInstrumentation($instrumentation);
+
         // Disposal ends a connection's transport with socket_shutdown()
         // (see abort()), and there is no non-blocking way to do it
         // without ext-sockets. Refusing here is what keeps the driver
@@ -214,7 +219,7 @@ final class PgsqlAsyncClient implements PostgresLink
             return new PgsqlAsyncTransaction($this, $connection, function (PgsqlAsyncConnection $connection, bool $discard) use ($owner): void {
                 $this->transactions->close($owner);
                 $this->release($connection, $discard);
-            });
+            }, $this->instrumentation);
         }
     }
 
@@ -257,8 +262,7 @@ final class PgsqlAsyncClient implements PostgresLink
      */
     private function runPooled(string $sql, Closure $operation): SqlResult
     {
-        $telemetry = Telemetry::global();
-        $token = $telemetry->queryDispatched('postgresql', $sql);
+        $token = $this->instrumentation->queryDispatched('postgresql', $sql);
 
         try {
             for ($attempt = 0; ; $attempt++) {
@@ -266,11 +270,11 @@ final class PgsqlAsyncClient implements PostgresLink
                 // The gap between queryDispatched and here is time spent
                 // waiting for a free pooled connection. Fires again on a
                 // stale-connection retry, marking the second attempt.
-                $telemetry->queryServerStarted($token);
+                $this->instrumentation->queryServerStarted($token);
 
                 try {
                     $result = $operation($connection);
-                    $telemetry->queryReaped($token, null);
+                    $this->instrumentation->queryReaped($token, null);
 
                     return $result;
                 } catch (StaleConnectionException $e) {
@@ -282,7 +286,7 @@ final class PgsqlAsyncClient implements PostgresLink
                 }
             }
         } catch (Throwable $e) {
-            $telemetry->queryReaped($token, $e);
+            $this->instrumentation->queryReaped($token, $e);
 
             throw $e;
         }

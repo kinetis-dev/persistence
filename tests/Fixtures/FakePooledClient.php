@@ -6,8 +6,10 @@ namespace Kinetis\Persistence\Tests\Fixtures;
 
 use Kinetis\Persistence\Contract\MysqlLink;
 use Kinetis\Persistence\Contract\MysqlTransaction;
+use Kinetis\Persistence\Contract\SqlInstrumentation;
 use Kinetis\Persistence\Contract\SqlResult;
 use Kinetis\Persistence\Driver\BufferedSqlResult;
+use Kinetis\Persistence\Driver\ContainedSqlInstrumentation;
 use Kinetis\Persistence\Driver\FiberTransactions;
 use stdClass;
 
@@ -47,9 +49,12 @@ final class FakePooledClient implements MysqlLink
 
     private readonly FiberTransactions $transactions;
 
-    public function __construct()
+    private readonly ContainedSqlInstrumentation $instrumentation;
+
+    public function __construct(?SqlInstrumentation $instrumentation = null)
     {
         $this->transactions = new FiberTransactions();
+        $this->instrumentation = new ContainedSqlInstrumentation($instrumentation);
     }
 
     #[\Override]
@@ -87,7 +92,7 @@ final class FakePooledClient implements MysqlLink
             }
         };
 
-        return new FakePooledTransaction($this, $connection, $release);
+        return new FakePooledTransaction($this, $connection, $release, $this->instrumentation);
     }
 
     #[\Override]

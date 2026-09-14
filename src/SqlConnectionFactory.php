@@ -4,254 +4,135 @@ declare(strict_types=1);
 
 namespace Kinetis\Persistence;
 
-use InvalidArgumentException;
-use Kinetis\Config\Config;
 use Kinetis\Persistence\Contract\MysqlLink;
 use Kinetis\Persistence\Contract\PostgresLink;
+use Kinetis\Persistence\Contract\SqlInstrumentation;
 use Kinetis\Persistence\Driver\MysqliAsyncClient;
 use Kinetis\Persistence\Driver\PdoMysqlClient;
 use Kinetis\Persistence\Driver\PdoPgsqlClient;
 use Kinetis\Persistence\Driver\PgsqlAsyncClient;
 
 /**
- * Builds a database client from Config, choosing the driver that fits
- * the runtime — every client implements the Kinetis-owned
+ * Builds a database client from a {@see ConnectionDefinition}, choosing
+ * the driver that fits the runtime — every client implements the
  * {@see MysqlLink}/{@see PostgresLink} contracts, so TransactionGuard,
  * the query builder, and application code are driver-agnostic.
  *
- * Driver selection (`DB_DRIVER`, connection-scoped like every other
- * DB_* key):
+ * Driver selection ({@see ConnectionDefinition::$driver}):
  *
- * - `auto` (the default): the native async driver when
- *   `frankenphp_handle_request()` exists (FrankenPHP worker mode) or
- *   `RR_MODE=http` (RoadRunner), PDO everywhere else — PHP-FPM and AWS
- *   Lambda included (see docs/persistence.md for what Lambda needs
- *   before `native` is the right choice there). Native is the measured
- *   default for the supported persistent-worker targets, FrankenPHP and
- *   RoadRunner; PDO is the baseline everywhere else because it is the
- *   commonly installed and default-enabled driver. Lambda stays an
- *   explicit opt-in: the deployment has to ship the native extension and
- *   budget a pool per execution environment, and there is no Lambda
- *   measurement here to justify choosing native for it automatically.
+ * - `auto`: the native async driver when `frankenphp_handle_request()`
+ *   exists (FrankenPHP worker mode) or `RR_MODE=http` (RoadRunner), PDO
+ *   everywhere else — PHP-FPM and AWS Lambda included (see
+ *   docs/persistence.md for what Lambda needs before `native` is the
+ *   right choice there). Native is the measured default for the
+ *   supported persistent-worker targets, FrankenPHP and RoadRunner; PDO
+ *   is the baseline everywhere else because it is the commonly installed
+ *   and default-enabled driver. Lambda stays an explicit opt-in: the
+ *   deployment has to ship the native extension and budget a pool per
+ *   execution environment, and there is no Lambda measurement here to
+ *   justify choosing native for it automatically.
  * - `native`: mysqli's MYSQLI_ASYNC ({@see MysqliAsyncClient}) or
  *   ext-pgsql's pg_send_query ({@see PgsqlAsyncClient}). C-speed wire
- *   protocol, Fiber-suspending, `concurrently()`-compatible. The
- *   Postgres client also needs ext-sockets and says so at construction
- *   if it is missing.
+ *   protocol, Fiber-suspending. The Postgres client also needs
+ *   ext-sockets and says so at construction if it is missing.
  * - `pdo`: one blocking PDO connection ({@see PdoMysqlClient}/
  *   {@see PdoPgsqlClient}).
  *
- * Connection options are canonical and driver-neutral — see
- * {@see ConnectionOptions}. They come from discrete, connection-scoped
- * keys (`DB_CHARSET`, `DB_COLLATION`, `DB_SSLMODE`, `DB_SSL_CA`,
- * `DB_SSL_CERT`, `DB_SSL_KEY`, `DB_CONNECT_TIMEOUT`, `DB_APP_NAME`,
- * `DB_COMPRESSION`), each driver
- * translating them to its native mechanism, and rejecting — loudly, at
- * construction — any option it cannot honor.
+ * Each driver translates the canonical {@see ConnectionOptions} to its
+ * native mechanism and rejects — loudly, at construction — any option it
+ * cannot honor. {@see ConnectionOptions::$maxConnections} caps the async
+ * drivers' fan-out width; the PDO drivers are a single connection.
  *
- * $connection selects a named connection via Config::scopedKey() —
- * 'default' reads the plain DB_* keys; any other name reads DB_{NAME}_*.
- *
- * $driver overrides `DB_DRIVER` for one call. {@see singleSession()}
- * is the stricter form of the same thing, for a caller whose work lives
- * in the database session itself.
- *
- * $poolOptions['maxConnections'] caps the async drivers' fan-out width
- * (the PDO drivers are a single connection, trivially within any cap).
- * $poolOptions['warmConnections'] (or the `DB_WARM_CONNECTIONS` key)
- * opens that many connections at construction instead of on first use —
- * see each driver's warmUp() for why a persistent worker should warm
- * its mysqli pool at boot.
+ * $instrumentation receives the moments every client and transaction
+ * reports; without one they report nothing.
  */
 final class SqlConnectionFactory
 {
-    /**
-     * @param array<string, mixed> $poolOptions
-     * @param 'auto'|'native'|'pdo'|null $driver Overrides the DB_DRIVER
-     *     key when given.
-     */
-    public static function fromConfig(
-        Config $config,
-        string $connection = 'default',
-        array $poolOptions = [],
-        ?string $driver = null,
+    public static function create(
+        ConnectionDefinition $definition,
+        ?SqlInstrumentation $instrumentation = null,
     ): MysqlLink|PostgresLink {
-        return self::build($config, $connection, $poolOptions, $driver, singleSession: false);
+        $native = match ($definition->driver) {
+            'auto' => self::shouldUseNativeDriverByDefault(),
+            'native' => true,
+            'pdo' => false,
+        };
+
+        [$host, $user, $password, $database, $port, $options] = self::arguments($definition);
+
+        return self::warm($definition, match (true) {
+            $definition->dialect === 'mysql' && $native => new MysqliAsyncClient($host, $user, $password, $database, $port, $options, $instrumentation),
+            $definition->dialect === 'mysql' => new PdoMysqlClient($host, $user, $password, $database, $port, $options, false, $instrumentation),
+            $native => new PgsqlAsyncClient($host, $user, $password, $database, $port, $options, $instrumentation),
+            default => new PdoPgsqlClient($host, $user, $password, $database, $port, $options, false, $instrumentation),
+        });
     }
 
     /**
-     * A client pinned to the first session it opens: PDO whatever
-     * DB_DRIVER says, and closed for good if that session is ever
-     * discarded, rather than reconnecting.
+     * A client pinned to the first session it opens: PDO whatever the
+     * definition's driver says, and closed for good if that session is
+     * ever discarded, rather than reconnecting.
      *
      * That is what work living in the session itself needs.
      * `kinetis/migrations` holds a session-scoped advisory lock for a
      * whole run, so a replacement session would be an unlocked one the
-     * run kept going on. Everything else wants {@see fromConfig()},
-     * where reconnecting is what keeps a long-lived process working.
+     * run kept going on. Everything else wants {@see create()}, where
+     * reconnecting is what keeps a long-lived process working.
      */
-    public static function singleSession(Config $config, string $connection = 'default'): MysqlLink|PostgresLink
-    {
-        return self::build($config, $connection, [], 'pdo', singleSession: true);
+    public static function singleSession(
+        ConnectionDefinition $definition,
+        ?SqlInstrumentation $instrumentation = null,
+    ): MysqlLink|PostgresLink {
+        [$host, $user, $password, $database, $port, $options] = self::arguments($definition);
+
+        return self::warm($definition, $definition->dialect === 'mysql'
+            ? new PdoMysqlClient($host, $user, $password, $database, $port, $options, true, $instrumentation)
+            : new PdoPgsqlClient($host, $user, $password, $database, $port, $options, true, $instrumentation));
     }
 
     /**
-     * @param array<string, mixed> $poolOptions
-     * @param 'auto'|'native'|'pdo'|null $driver
+     * @return array{string, string, string, string, int, ConnectionOptions}
      */
-    private static function build(
-        Config $config,
-        string $connection,
-        array $poolOptions,
-        ?string $driver,
-        bool $singleSession,
+    private static function arguments(ConnectionDefinition $definition): array
+    {
+        return [
+            $definition->host,
+            $definition->user,
+            $definition->password,
+            $definition->database,
+            $definition->port,
+            $definition->options,
+        ];
+    }
+
+    /**
+     * Warming connects right here, so a wrong definition fails at boot
+     * instead of on the first query — and under a persistent worker
+     * (FrankenPHP or RoadRunner) the boot-time connect is what keeps
+     * mysqli fds numbered below FD_SETSIZE (see
+     * MysqliAsyncClient::warmUp()).
+     */
+    private static function warm(
+        ConnectionDefinition $definition,
+        MysqliAsyncClient|PdoMysqlClient|PgsqlAsyncClient|PdoPgsqlClient $client,
     ): MysqlLink|PostgresLink {
-        $host = $config->string(Config::scopedKey('DB_HOST', $connection), '127.0.0.1');
-        $database = $config->string(Config::scopedKey('DB_NAME', $connection), 'app');
-        $user = $config->string(Config::scopedKey('DB_USER', $connection), 'app');
-        $password = $config->required(Config::scopedKey('DB_PASSWORD', $connection));
-
-        $dialectKey = Config::scopedKey('DB_CONNECTION', $connection);
-        $dialect = $config->required($dialectKey);
-
-        if ($dialect !== 'mysql' && $dialect !== 'pgsql') {
-            throw new InvalidArgumentException("{$dialectKey} must be \"mysql\" or \"pgsql\".");
-        }
-
-        $driver ??= $config->string(Config::scopedKey('DB_DRIVER', $connection), 'auto');
-
-        if ($driver === 'auto') {
-            $driver = self::shouldUseNativeDriverByDefault() ? 'native' : 'pdo';
-        }
-
-        if ($driver !== 'native' && $driver !== 'pdo') {
-            throw new InvalidArgumentException(
-                'The database driver must be "auto", "native", or "pdo", got "' . $driver . '" — from the '
-                . '$driver argument or ' . Config::scopedKey('DB_DRIVER', $connection) . '.',
-            );
-        }
-
-        $defaultPort = $dialect === 'mysql' ? 3306 : 5432;
-        $portKey = Config::scopedKey('DB_PORT', $connection);
-        $port = $config->int($portKey, $defaultPort);
-
-        if ($port < 1 || $port > 65535) {
-            throw new InvalidArgumentException("{$portKey} must be a valid TCP port (1-65535), got {$port}.");
-        }
-
-        $options = self::buildOptions($config, $connection, $poolOptions);
-
-        // Read and validated before any driver is constructed — a bad
-        // DB_WARM_CONNECTIONS must never depend on which driver happens
-        // to be lazy about opening a real connection; the invariant
-        // holds regardless of that implementation detail. An explicit
-        // code-level poolOption wins over the env key, same as
-        // maxConnections in buildOptions().
-        $warmConnectionsKey = Config::scopedKey('DB_WARM_CONNECTIONS', $connection);
-        $warmConnections = self::intPoolOption($poolOptions, 'warmConnections')
-            ?? $config->int($warmConnectionsKey, 0);
-
-        if ($warmConnections < 0) {
-            throw new InvalidArgumentException("{$warmConnectionsKey} must not be negative, got {$warmConnections}.");
-        }
-
-        $client = match (true) {
-            $dialect === 'mysql' && $driver === 'native' => new MysqliAsyncClient($host, $user, $password, $database, $port, $options),
-            $dialect === 'mysql' => new PdoMysqlClient($host, $user, $password, $database, $port, $options, $singleSession),
-            $driver === 'native' => new PgsqlAsyncClient($host, $user, $password, $database, $port, $options),
-            default => new PdoPgsqlClient($host, $user, $password, $database, $port, $options, $singleSession),
-        };
-
-        // Warming connects right here, so a wrong DB config fails at
-        // boot instead of on the first query — and under a persistent
-        // worker (FrankenPHP or RoadRunner) the boot-time connect is
-        // what keeps mysqli fds numbered below FD_SETSIZE (see
-        // MysqliAsyncClient::warmUp()).
-        if ($warmConnections > 0) {
-            $client->warmUp($warmConnections);
+        if ($definition->warmConnections > 0) {
+            $client->warmUp($definition->warmConnections);
         }
 
         return $client;
     }
 
     /**
-     * A $poolOptions override is declared array<string, mixed> — real
-     * consumer code, not a Config-parsed string — so an int-typed pool
-     * setting given the wrong shape (a string, a float, an object) must
-     * be a clear, owning-factory configuration error naming the actual
-     * type given, not an incidental TypeError several calls deeper once
-     * it reaches a real int-typed constructor parameter (ConnectionOptions'
-     * own $maxConnections, most notably). Returns null when the key is
-     * absent, so the caller's own Config-key fallback applies.
-     *
-     * @param array<string, mixed> $poolOptions
-     */
-    private static function intPoolOption(array $poolOptions, string $key): ?int
-    {
-        if (!\array_key_exists($key, $poolOptions)) {
-            return null;
-        }
-
-        $value = $poolOptions[$key];
-
-        if (!\is_int($value)) {
-            throw new InvalidArgumentException(
-                "\$poolOptions['{$key}'] must be an int, got " . \get_debug_type($value) . '.',
-            );
-        }
-
-        return $value;
-    }
-
-    /**
-     * The whole of `DB_DRIVER=auto`: `native` when
-     * `frankenphp_handle_request()` exists or `RR_MODE=http` is set,
-     * `pdo` for every other runtime. Those two signals are the entire
-     * rule — no other environment selects `native` by default, however
-     * long its PHP process lives. AWS Lambda gets `pdo` here; a
-     * deployment wanting otherwise sets `DB_DRIVER=native` explicitly.
-     *
-     * Both signals are read here rather than through
-     * `Kinetis\Runtime\RuntimeDetector::detect()`, which answers the
-     * separate question of which adapter drives the request loop: going
-     * through it would risk instantiating `BrefLambdaAdapter` (throwing
-     * if `kinetis/bref-adapter` isn't installed) purely because
-     * `AWS_LAMBDA_RUNTIME_API` happened to be set.
+     * The whole of `auto`: `native` when `frankenphp_handle_request()`
+     * exists or `RR_MODE=http` is set, `pdo` for every other runtime.
+     * Those two signals are the entire rule — no other environment
+     * selects `native` by default, however long its PHP process lives.
+     * AWS Lambda gets `pdo` here; a deployment wanting otherwise selects
+     * `native` explicitly.
      */
     private static function shouldUseNativeDriverByDefault(): bool
     {
         return \function_exists('frankenphp_handle_request') || \getenv('RR_MODE') === 'http';
-    }
-
-    /**
-     * @param array<string, mixed> $poolOptions
-     */
-    private static function buildOptions(Config $config, string $connection, array $poolOptions): ConnectionOptions
-    {
-        $compression = $config->get(Config::scopedKey('DB_COMPRESSION', $connection));
-        $connectTimeout = $config->intOrNull(Config::scopedKey('DB_CONNECT_TIMEOUT', $connection));
-
-        // An explicit code-level poolOption wins; the connection-scoped
-        // env key covers deployments tuning pool width without editing
-        // bootstrap code (see docs/performance-tuning.md for sizing).
-        // The lower bound (>= 1) is ConnectionOptions' own job; this only
-        // guards the type, so a non-int poolOption is this factory's own
-        // clear error rather than an incidental TypeError from that
-        // constructor.
-        $maxConnections = self::intPoolOption($poolOptions, 'maxConnections')
-            ?? $config->int(Config::scopedKey('DB_MAX_CONNECTIONS', $connection), 8);
-
-        return new ConnectionOptions(
-            charset: $config->get(Config::scopedKey('DB_CHARSET', $connection)),
-            collation: $config->get(Config::scopedKey('DB_COLLATION', $connection)),
-            sslMode: $config->get(Config::scopedKey('DB_SSLMODE', $connection)),
-            sslCa: $config->get(Config::scopedKey('DB_SSL_CA', $connection)),
-            connectTimeout: $connectTimeout,
-            applicationName: $config->get(Config::scopedKey('DB_APP_NAME', $connection)),
-            compression: $compression !== null ? \in_array(\strtolower((string) $compression), ['1', 'true', 'on', 'yes'], true) : null,
-            maxConnections: $maxConnections,
-            sslCert: $config->get(Config::scopedKey('DB_SSL_CERT', $connection)),
-            sslKey: $config->get(Config::scopedKey('DB_SSL_KEY', $connection)),
-        );
     }
 }
