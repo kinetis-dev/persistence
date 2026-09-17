@@ -49,6 +49,13 @@ interface SqlInstrumentation
 
     public function queryReaped(mixed $token, ?Throwable $failure): void;
 
+    /**
+     * A transaction begun on a client. Its own BEGIN, COMMIT and
+     * ROLLBACK are never reported as query moments: this pair and
+     * {@see transactionEnded()}'s outcome are the whole of what a
+     * transaction's boundary reports. Statements run *through* the
+     * transaction report the three query moments like any others.
+     */
     public function transactionStarted(string $system): mixed;
 
     /**

@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Kinetis\Persistence\Tests\Integration;
 
+use Kinetis\Persistence\Driver\SqlParamInterpolator;
 use PHPUnit\Framework\Attributes\DataProvider;
 
 /**
@@ -143,6 +144,39 @@ final class TypeFidelityTest extends DriverCase
 
         $row = $db->execute("SELECT CAST(? AS {$cast}) AS v", [1.0E-300])->fetchRow();
         self::assertSame(1.0E-300, $row['v'] ?? null);
+
+        $db->close();
+    }
+
+    /**
+     * A bound double reaches the server as the exact binary double the
+     * caller passed — on all four drivers, which encode in three
+     * different ways: escaped into the statement text on native mysqli,
+     * as parameter text on native pgsql, and as a bound PDO::PARAM_STR
+     * on both PDO drivers.
+     *
+     * The comparison is made by the server against a literal of the same
+     * text, rather than by reading the value back, so a server's own
+     * float-to-text rendering cannot mask a parameter that was already
+     * truncated on its way out.
+     */
+    #[DataProvider('drivers')]
+    public function test_a_bound_double_reaches_the_server_undamaged(string $driver): void
+    {
+        $db = self::makeClient($driver);
+        $cast = self::isMysql($driver) ? 'DOUBLE' : 'DOUBLE PRECISION';
+
+        // Values PHP's own float-to-string cast loses at the default
+        // `precision` of 14.
+        foreach ([0.1 + 0.2, 1726480000.123456, 1.2345678901234567] as $value) {
+            $literal = SqlParamInterpolator::encodeFloat($value);
+            $row = $db->execute(
+                "SELECT CAST(? AS {$cast}) = CAST('{$literal}' AS {$cast}) AS v",
+                [$value],
+            )->fetchRow();
+
+            self::assertTrue((bool) ($row['v'] ?? false), "{$driver} did not carry {$literal} intact");
+        }
 
         $db->close();
     }

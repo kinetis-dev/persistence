@@ -411,13 +411,11 @@ final class MysqliAsyncClient implements MysqlLink
                 $value === null => 'NULL',
                 \is_bool($value) => $value ? '1' : '0',
                 \is_int($value) => (string) $value,
-                // A plain cast, never sprintf('%G'): printf-family float
-                // formatting honors setlocale(LC_NUMERIC, ...), and a
-                // locale with a comma decimal separator would emit "1,5"
-                // — two SQL expressions, silently wrong results. PHP's
-                // float-to-string cast is locale-independent and
-                // round-trip exact.
-                \is_float($value) => (string) $value,
+                // Never a plain cast: how much of a float survives one
+                // is decided by the "precision" INI setting rather than
+                // by the value
+                // ({@see SqlParamInterpolator::encodeFloat()}).
+                \is_float($value) => SqlParamInterpolator::encodeFloat($value),
                 default => "'" . $connection->real_escape_string($value) . "'",
             };
         });

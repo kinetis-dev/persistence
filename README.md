@@ -92,9 +92,12 @@ a session-scoped advisory lock.
 Pass a `Contract\SqlInstrumentation` as either factory method's second
 argument to receive what every client and transaction reports: a query
 dispatched, sent to the server, and reaped; a transaction started, and
-ended as `commit`, `rollback` or `unknown`. A client contains any failure
-its instrumentation throws, so instrumentation cannot change a query
-result, a transaction outcome or the release of a connection.
+ended as `commit`, `rollback` or `unknown`. A transaction's own `BEGIN`,
+`COMMIT` and `ROLLBACK` are not query moments — the started/ended pair is
+what reports them — while every statement run through the transaction
+reports all three. A client contains any failure its instrumentation
+throws, so instrumentation cannot change a query result, a transaction
+outcome or the release of a connection.
 
 Every moment runs inline on the query's Fiber: an implementation must not
 suspend, must stay bounded, and must perform no blocking I/O — anything

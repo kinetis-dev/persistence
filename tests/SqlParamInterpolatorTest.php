@@ -7,6 +7,7 @@ namespace Kinetis\Persistence\Tests;
 use Kinetis\Persistence\Driver\SqlDialect;
 use Kinetis\Persistence\Driver\SqlParamInterpolator;
 use Kinetis\Persistence\Driver\SqlParamPreflight;
+use Kinetis\Persistence\Driver\SqlPlaceholderScanner;
 use Kinetis\Persistence\Exception\QueryException;
 use PHPUnit\Framework\TestCase;
 use stdClass;
@@ -36,7 +37,7 @@ final class SqlParamInterpolatorTest extends TestCase
     /** How many "?" the scan recognizes as placeholders in $sql. */
     private static function placeholders(string $sql, SqlDialect $dialect): int
     {
-        return \count(SqlParamInterpolator::split($sql, $dialect)) - 1;
+        return \count(SqlPlaceholderScanner::split($sql, $dialect)) - 1;
     }
 
     public function test_substitutes_placeholders_positionally(): void

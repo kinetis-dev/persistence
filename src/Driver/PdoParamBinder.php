@@ -14,8 +14,14 @@ use PDOStatement;
  * boolean columns) and loses the null/bool/int type information the
  * server-side prepare could otherwise use. Explicit PDO::PARAM_* types
  * keep bool/null/int parameters behaving identically across all four
- * drivers; floats and strings stay on the default string path, whose
- * float conversion is locale-independent and round-trip exact.
+ * drivers.
+ *
+ * A float is bound as PDO::PARAM_STR like a string, but the text is
+ * this package's rather than PDO's own cast: that cast is the
+ * "precision" INI setting's, which keeps 14 significant digits by
+ * default and would store a different number than the caller bound
+ * ({@see SqlParamInterpolator::encodeFloat()}). Strings are bound
+ * unchanged.
  *
  * Walks $params in iteration order, binding positions 1..n for the n
  * values it is given and nothing else. Both halves of that are only
@@ -39,13 +45,17 @@ final class PdoParamBinder
         $position = 1;
 
         foreach ($params as $value) {
-            $statement->bindValue($position++, $value, match (true) {
-                $value === null => PDO::PARAM_NULL,
-                \is_bool($value) => PDO::PARAM_BOOL,
-                \is_int($value) => PDO::PARAM_INT,
-                // A finite float or a string.
-                default => PDO::PARAM_STR,
-            });
+            $statement->bindValue(
+                $position++,
+                \is_float($value) ? SqlParamInterpolator::encodeFloat($value) : $value,
+                match (true) {
+                    $value === null => PDO::PARAM_NULL,
+                    \is_bool($value) => PDO::PARAM_BOOL,
+                    \is_int($value) => PDO::PARAM_INT,
+                    // An encoded float or a string.
+                    default => PDO::PARAM_STR,
+                },
+            );
         }
     }
 }

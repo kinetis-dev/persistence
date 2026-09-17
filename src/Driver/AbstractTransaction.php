@@ -55,6 +55,13 @@ use Throwable;
  * a connection lost, a discard, a finish nothing answered, a transaction
  * the server ended on its own.
  *
+ * Query moments are reported here too, around the concrete driver call
+ * and nothing else: a transaction's statements reach their pinned
+ * connection directly, bypassing the instrumentation wrappers its client
+ * runs its own pooled statements through. COMMIT and ROLLBACK are not
+ * among them — a transaction's own finish is the started/ended pair
+ * above, not a query.
+ *
  * The parameter pre-flight is shared here too, for the same reason the
  * state check is: a subclass reaching its pinned connection before the
  * argument list has been settled would decide a caller's mistake
@@ -100,9 +107,7 @@ abstract class AbstractTransaction implements SqlTransaction
         private readonly ContainedSqlInstrumentation $instrumentation,
     ) {
         $this->owner = Fiber::getCurrent();
-        $this->instrumentationToken = $this->instrumentation->transactionStarted(
-            $this instanceof MysqlTransaction ? 'mysql' : 'postgresql',
-        );
+        $this->instrumentationToken = $this->instrumentation->transactionStarted($this->system());
     }
 
     #[\Override]
@@ -111,7 +116,7 @@ abstract class AbstractTransaction implements SqlTransaction
         $this->assertOwner();
         $this->assertActive();
 
-        return $this->dispatch(fn (): SqlResult => $this->run($sql));
+        return $this->dispatch($sql, fn (): SqlResult => $this->run($sql));
     }
 
     #[\Override]
@@ -129,7 +134,7 @@ abstract class AbstractTransaction implements SqlTransaction
         );
         $query = $this->preflight->run($sql, $params);
 
-        return $this->dispatch(fn (): SqlResult => $this->runWithParams($query));
+        return $this->dispatch($sql, fn (): SqlResult => $this->runWithParams($query));
     }
 
     #[\Override]
@@ -353,10 +358,10 @@ abstract class AbstractTransaction implements SqlTransaction
      * failed, so nothing that follows runs in autocommit believing it is
      * still inside one.
      */
-    private function dispatch(Closure $statement): SqlResult
+    private function dispatch(string $sql, Closure $statement): SqlResult
     {
         try {
-            $result = $statement();
+            $result = $this->reported($sql, $statement);
         } catch (QueryException $e) {
             if ($this instanceof PostgresTransaction) {
                 $this->aborted = true;
@@ -379,6 +384,45 @@ abstract class AbstractTransaction implements SqlTransaction
         }
 
         $this->settleIfServerEnded();
+
+        return $result;
+    }
+
+    /**
+     * The concrete driver call and the three query moments around it —
+     * the whole of what a transaction reports about a statement, and all
+     * of it before {@see dispatch()} moves any state.
+     *
+     * A transaction runs its statements straight down a connection it
+     * has pinned, so the client's own instrumentation wrappers — which
+     * report around acquiring a pooled connection — never see them.
+     * Pinned is also why the two started moments are one: nothing waits
+     * between handing the statement to the driver and it going to the
+     * server.
+     *
+     * The reap carries this call's own success or failure and runs
+     * exactly once, ahead of every transition a failed or
+     * transaction-ending statement triggers — settling, discarding the
+     * connection, closing the span. A statement the server answered is
+     * therefore reported as answered whatever handing its connection
+     * back goes on to do.
+     *
+     * @param Closure(): SqlResult $statement
+     */
+    private function reported(string $sql, Closure $statement): SqlResult
+    {
+        $token = $this->instrumentation->queryDispatched($this->system(), $sql);
+        $this->instrumentation->queryServerStarted($token);
+
+        try {
+            $result = $statement();
+        } catch (Throwable $e) {
+            $this->instrumentation->queryReaped($token, $e);
+
+            throw $e;
+        }
+
+        $this->instrumentation->queryReaped($token, null);
 
         return $result;
     }
@@ -473,6 +517,12 @@ abstract class AbstractTransaction implements SqlTransaction
         } finally {
             $this->instrumentation->transactionEnded($this->instrumentationToken, $outcome);
         }
+    }
+
+    /** The `$system` every moment this transaction reports is tagged with. */
+    private function system(): string
+    {
+        return $this instanceof MysqlTransaction ? 'mysql' : 'postgresql';
     }
 
     private function assertOwner(): void

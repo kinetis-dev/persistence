@@ -328,6 +328,11 @@ final class PgsqlAsyncClient implements PostgresLink
         $encoded = \array_map(static fn (null|bool|int|float|string $value): ?string => match (true) {
             $value === null => null,
             \is_bool($value) => $value ? 't' : 'f',
+            // A float is spelled out rather than cast, which the
+            // "precision" INI setting would truncate
+            // ({@see SqlParamInterpolator::encodeFloat()}); an int and a
+            // string are exactly their own text.
+            \is_float($value) => SqlParamInterpolator::encodeFloat($value),
             default => (string) $value,
         }, $query->values);
 

@@ -26,7 +26,7 @@ namespace Kinetis\Persistence\Driver;
  *
  * One instance per client and per transaction, each holding its own
  * dialect: the two disagree on enough lexical detail that which "?" is
- * a placeholder is a dialect question ({@see SqlParamInterpolator}).
+ * a placeholder is a dialect question ({@see SqlPlaceholderScanner}).
  * What comes out is a {@see PreflightedQuery} the execution layer
  * consumes — the later layer may read that decision, and never makes it.
  *
@@ -72,7 +72,7 @@ final class SqlParamPreflight
             // Scanned before the memo is touched, so SQL the scan
             // refuses outright throws here rather than becoming an entry
             // a later call would trust.
-            $segments = SqlParamInterpolator::split($sql, $this->dialect);
+            $segments = SqlPlaceholderScanner::split($sql, $this->dialect);
 
             if (\count($this->segments) >= self::MAX_ENTRIES) {
                 $this->segments = [];
