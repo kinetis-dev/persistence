@@ -87,6 +87,33 @@ a session-scoped advisory lock.
   `Exception\ConnectionException`. Call it when the process stops using
   the client.
 
+## Failures
+
+Every persistence failure is an `Exception\SqlException`:
+
+- **`Exception\ConnectionException`** — connecting failed, or an
+  established connection died.
+- **`Exception\QueryException`** — a statement was rejected or failed.
+  `getQuery()` is its SQL text, `getCode()` the server's own error number
+  (`0` where none was reported), and `getSqlState()` the SQLSTATE the
+  server or driver reported, or `null`.
+- **`Exception\TransactionException`** — transaction misuse: a statement
+  on a transaction the server or the application already ended, nesting
+  the driver refuses, or a failed `COMMIT`/`ROLLBACK`.
+
+`QueryException::isUniqueViolation()` is the portable unique-conflict
+classifier, true on every driver for PostgreSQL's SQLSTATE `23505` and
+for the MySQL family's error 1062, `ER_DUP_ENTRY`. MySQL and MariaDB
+report SQLSTATE `23000` for every integrity violation, a `NOT NULL` one
+included, so there the error number decides and the SQLSTATE cannot.
+Classifying a failure changes nothing about it: the statement is not
+retried and the error is not suppressed.
+
+Let a unique key settle a race instead of reading before the write, since
+two requests can both find a value free, and catch the violation outside
+`TransactionGuard::transaction()`, which has already rolled the
+transaction back by then.
+
 ## Instrumentation
 
 Pass a `Contract\SqlInstrumentation` as either factory method's second
