@@ -196,7 +196,8 @@ trait PdoExecutionTrait
      * result is part of it: a later result set can carry the server's own
      * error, so the span records a success only once the whole result
      * exists, and every PDO failure along the way reaches the caller as
-     * this package's own exception.
+     * this package's own exception, recorded before the session it came
+     * from is given up ({@see discardFailedSession()}).
      *
      * @param Closure(): SqlResult $statement
      */
@@ -212,6 +213,7 @@ trait PdoExecutionTrait
         } catch (PDOException $e) {
             $failure = new QueryException($e->getMessage(), $sql, $e, PdoError::vendorCode($e), PdoError::sqlState($e));
             $this->instrumentation->queryReaped($token, $failure);
+            $this->discardFailedSession();
 
             throw $failure;
         } catch (Throwable $e) {
@@ -234,7 +236,8 @@ trait PdoExecutionTrait
      *
      * This is how a session that can carry no more work — abandoned by a
      * transaction, ended by a terminal lock failure, left in a result
-     * state that could not be cleared — is given up. An ordinary client
+     * state that could not be cleared, or on an ordinary client failed by
+     * a root-link PDO call — is given up. An ordinary client
      * stays open and opens a fresh session on its next call; a
      * single-session one is out of service from here.
      */
@@ -246,6 +249,23 @@ trait PdoExecutionTrait
 
         if ($this->singleSession) {
             $this->closedReason ??= self::SESSION_LOST_MESSAGE;
+        }
+    }
+
+    /**
+     * Gives up the session a root-link PDOException came from, on an
+     * ordinary client only. PDO reports a session the server terminated
+     * and an ordinary statement error the same way, and no vendor code
+     * list tells them apart portably, so an ordinary client — which
+     * promises no session identity — trusts neither for later work and
+     * opens a fresh session on its next call. The failed statement is
+     * never sent again. A single-session client keeps its session and
+     * stays open: an ordinary error must not end the lock it holds.
+     */
+    private function discardFailedSession(): void
+    {
+        if (!$this->singleSession) {
+            $this->discardSession();
         }
     }
 
@@ -280,6 +300,8 @@ trait PdoExecutionTrait
         try {
             $this->connection()->beginTransaction();
         } catch (PDOException $e) {
+            $this->discardFailedSession();
+
             throw new QueryException('Failed to begin transaction: ' . $e->getMessage(), '', $e, PdoError::vendorCode($e), PdoError::sqlState($e));
         }
 

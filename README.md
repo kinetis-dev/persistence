@@ -63,9 +63,11 @@ width — and how many connections to open at construction.
 names: `native` (mysqli or ext-pgsql async), `pdo`, or `auto` — native
 under FrankenPHP worker mode or RoadRunner, PDO everywhere else.
 `SqlConnectionFactory::singleSession()` builds a PDO client pinned to
-the first session it opens, which closes instead of reconnecting if that
-session is lost: the client for work that lives in the session, such as
-a session-scoped advisory lock.
+the first session it opens, which never opens a replacement: the client
+for work that lives in the session, such as a session-scoped advisory
+lock. An ordinary PDO client gives up its session after a failed
+statement or `beginTransaction()` and opens a fresh one on its next
+call, without sending the failed statement again.
 
 ## What the host owns
 
