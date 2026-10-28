@@ -13,9 +13,33 @@ parameters:
         -
             identifier: trait.unused
             path: src/Testing/DatabaseTruncation.php
+        # The PDO drivers are the blocking drivers, for runtimes whose
+        # process serves one request at a time. Application code reaches
+        # them only through the link contracts the blocking-call rule's
+        # message names, whose driver selection matches the runtime.
+        -
+            identifier: kinetis.blockingCall
+            path: src/Driver/PdoMysqlClient.php
+        -
+            identifier: kinetis.blockingCall
+            path: src/Driver/PdoPgsqlClient.php
+        # pg_connect() here is PGSQL_CONNECT_ASYNC, driven by
+        # pg_connect_poll() on Revolt readiness waits. The class docblock
+        # names the one synchronous step, hostname resolution.
+        -
+            identifier: kinetis.blockingCall
+            path: src/Driver/PgsqlAsyncClient.php
 
 services:
     -
         class: Kinetis\Linting\NoStaticPropertiesRule
+        tags:
+            - phpstan.rules.rule
+    -
+        class: Kinetis\Linting\NoBlockingIoRule
+        tags:
+            - phpstan.rules.rule
+    -
+        class: Kinetis\Linting\NoProcessGlobalsRule
         tags:
             - phpstan.rules.rule
