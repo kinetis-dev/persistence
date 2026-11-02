@@ -18,7 +18,7 @@
         "kinetis/framework": "dev-main",
         "phpstan/phpstan": "^2.2.8",
         "phpunit/phpunit": "^13.3.3",
-        "vimeo/psalm": "^6.17"
+        "vimeo/psalm": "^7.0"
     },
     "suggest": {
         "ext-mysqli": "Needed by the native MySQL driver (Kinetis\\Persistence\\Driver\\MysqliAsyncClient) — the auto driver's choice under FrankenPHP worker mode and RoadRunner.",
