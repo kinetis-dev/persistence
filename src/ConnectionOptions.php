@@ -16,7 +16,8 @@ use InvalidArgumentException;
  *
  * A field the selected driver cannot honor is a construction-time
  * InvalidArgumentException naming the field and the driver — never a
- * silent ignore. The supported matrix lives in docs/persistence.md.
+ * silent ignore. The supported matrix lives in
+ * {@link https://kinetis.dev/docs/persistence.html}.
  */
 final readonly class ConnectionOptions
 {
@@ -176,7 +177,7 @@ final readonly class ConnectionOptions
             if ($set) {
                 throw new InvalidArgumentException(
                     "The {$driverLabel} driver does not support the \"{$field}\" connection option. "
-                    . 'Unset it, or select a driver that supports it (see docs/persistence.md for the matrix).',
+                    . 'Unset it, or select a driver that supports it (see https://kinetis.dev/docs/persistence.html for the matrix).',
                 );
             }
         }

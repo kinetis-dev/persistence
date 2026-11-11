@@ -92,7 +92,7 @@ final class ConnectionOptionsTest extends TestCase
         \assert(\is_string($field));
 
         $this->expectException(InvalidArgumentException::class);
-        $this->expectExceptionMessage("The test-driver driver does not support the \"{$field}\" connection option. Unset it, or select a driver that supports it (see docs/persistence.md for the matrix).");
+        $this->expectExceptionMessage("The test-driver driver does not support the \"{$field}\" connection option. Unset it, or select a driver that supports it (see https://kinetis.dev/docs/persistence.html for the matrix).");
         $options->rejectUnsupported('test-driver', [$field]);
     }
 

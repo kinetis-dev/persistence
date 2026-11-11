@@ -27,8 +27,8 @@ namespace Kinetis\Persistence\Contract;
  * commit() throws. A COMMIT or ROLLBACK the server refuses throws and
  * discards the connection: what is left on it is a transaction of
  * unknown outcome. On MySQL, DDL commits the surrounding transaction
- * implicitly — see docs/migrations.md — and the native driver cannot
- * observe that, so keep DDL out of transactions.
+ * implicitly — see {@link https://kinetis.dev/docs/migrations.html} — and
+ * the native driver cannot observe that, so keep DDL out of transactions.
  *
  * TTransaction passes the dialect through to SqlLink, so a
  * MysqlTransaction and the MysqlLink it also is agree on one
