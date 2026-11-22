@@ -153,7 +153,7 @@ reports through Kinetis telemetry.
 composer require kinetis/persistence
 ```
 
-Requires PHP 8.4+, plus the extension for the driver you use:
+Requires PHP 8.4 or 8.5, plus the extension for the driver you use:
 `ext-mysqli`, `ext-pgsql` (with `ext-sockets`), `ext-pdo_mysql` or
 `ext-pdo_pgsql`. Full documentation:
 [kinetis.dev/docs/persistence.html](https://kinetis.dev/docs/persistence.html).
