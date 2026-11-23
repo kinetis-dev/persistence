@@ -2108,9 +2108,10 @@
             "dist": {
                 "type": "path",
                 "url": "../framework",
-                "reference": "eb3fba7fe95f2e5a05b700ca703dbdbc9cc765b6"
+                "reference": "c968c409fc63c831879287cf347d5b730f25f216"
             },
             "require": {
+                "ext-fileinfo": "*",
                 "nyholm/psr7": "^1.8.2",
                 "nyholm/psr7-server": "^1.1.0",
                 "php": ">=8.4 <8.6",
