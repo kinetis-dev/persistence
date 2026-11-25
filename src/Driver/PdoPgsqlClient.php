@@ -8,6 +8,7 @@ use Closure;
 use Kinetis\Persistence\ConnectionOptions;
 use Kinetis\Persistence\Contract\PostgresLink;
 use Kinetis\Persistence\Contract\PostgresTransaction;
+use Kinetis\Persistence\Contract\ReportsJsonDepth;
 use Kinetis\Persistence\Contract\PrefersPreparedStatements;
 use Kinetis\Persistence\Contract\SqlInstrumentation;
 use Kinetis\Persistence\Exception\ConnectionException;
@@ -32,7 +33,7 @@ use PDOStatement;
  * ({@see PdoExecutionTrait::discardSession()}) and replaced on the next
  * call, unless $singleSession pins the client to the first one.
  */
-final class PdoPgsqlClient implements PostgresLink, PrefersPreparedStatements
+final class PdoPgsqlClient implements PostgresLink, PrefersPreparedStatements, ReportsJsonDepth
 {
     use PdoExecutionTrait;
 
@@ -58,6 +59,13 @@ final class PdoPgsqlClient implements PostgresLink, PrefersPreparedStatements
         foreach ($this->dsnValues($host, $database) as $name => $value) {
             self::assertDsnValue($name, $value);
         }
+    }
+
+    /** PostgreSQL stores deeper JSON than json_decode() reads back, so the decoder's limit is the link's. */
+    #[\Override]
+    public function jsonDepth(): int
+    {
+        return JsonDepth::DECODER;
     }
 
     #[\Override]

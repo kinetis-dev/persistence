@@ -8,6 +8,7 @@ use Closure;
 use Kinetis\Persistence\ConnectionOptions;
 use Kinetis\Persistence\Contract\MysqlLink;
 use Kinetis\Persistence\Contract\MysqlTransaction;
+use Kinetis\Persistence\Contract\ReportsJsonDepth;
 use Kinetis\Persistence\Contract\SqlInstrumentation;
 use Kinetis\Persistence\Contract\SqlResult;
 use Kinetis\Persistence\Exception\ConnectionException;
@@ -73,7 +74,7 @@ use Throwable;
  * construction, against the connection's actual charset — which this
  * client always sets explicitly (utf8mb4 unless configured otherwise).
  */
-final class MysqliAsyncClient implements MysqlLink
+final class MysqliAsyncClient implements MysqlLink, ReportsJsonDepth
 {
     private const int POLL_BLOCK_MICROSECONDS = 1000;
 
@@ -119,6 +120,9 @@ final class MysqliAsyncClient implements MysqlLink
     private ?string $pollTimerId = null;
 
     private bool $closed = false;
+
+    /** @var positive-int|null the JSON depth of the server behind the last connection opened, null until one is */
+    private ?int $jsonDepth = null;
 
     /**
      * The pre-flight every execute() passes before this client touches
@@ -186,6 +190,21 @@ final class MysqliAsyncClient implements MysqlLink
         while (\count($this->connections) < $target) {
             $this->idle[] = $this->connect();
         }
+    }
+
+    /**
+     * Read from the handshake of the last connection this client opened.
+     * Before the first one, a connection is opened and pooled for that.
+     */
+    #[\Override]
+    public function jsonDepth(): int
+    {
+        if ($this->jsonDepth === null) {
+            $this->release($this->acquire());
+        }
+
+        /** @var positive-int connect() records it for every connection it opens */
+        return $this->jsonDepth;
     }
 
     #[\Override]
@@ -580,6 +599,8 @@ final class MysqliAsyncClient implements MysqlLink
         if ($connection->connect_errno !== 0) {
             throw new ConnectionException('Failed to connect to MySQL: ' . $connection->connect_error);
         }
+
+        $this->jsonDepth = JsonDepth::mysql($connection->server_info);
 
         try {
             // Always set explicitly: real_escape_string in interpolate()

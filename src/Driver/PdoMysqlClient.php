@@ -9,6 +9,7 @@ use Kinetis\Persistence\ConnectionOptions;
 use Kinetis\Persistence\Contract\MysqlLink;
 use Kinetis\Persistence\Contract\MysqlTransaction;
 use Kinetis\Persistence\Contract\PrefersPreparedStatements;
+use Kinetis\Persistence\Contract\ReportsJsonDepth;
 use Kinetis\Persistence\Contract\SqlInstrumentation;
 use Kinetis\Persistence\Exception\ConnectionException;
 use Kinetis\Persistence\Exception\QueryException;
@@ -34,7 +35,7 @@ use PDOStatement;
  * ({@see PdoExecutionTrait::discardSession()}) and replaced on the next
  * call, unless $singleSession pins the client to the first one.
  */
-final class PdoMysqlClient implements MysqlLink, PrefersPreparedStatements
+final class PdoMysqlClient implements MysqlLink, PrefersPreparedStatements, ReportsJsonDepth
 {
     use PdoExecutionTrait;
 
@@ -62,6 +63,13 @@ final class PdoMysqlClient implements MysqlLink, PrefersPreparedStatements
         // client's own arguments.
         self::assertDsnValue('host', $host);
         self::assertDsnValue('database', $database);
+    }
+
+    /** Read from the current session's handshake, opening the session when none is open. */
+    #[\Override]
+    public function jsonDepth(): int
+    {
+        return JsonDepth::mysql((string) $this->connection()->getAttribute(PDO::ATTR_SERVER_VERSION));
     }
 
     #[\Override]

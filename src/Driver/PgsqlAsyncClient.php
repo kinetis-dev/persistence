@@ -8,6 +8,7 @@ use Closure;
 use Kinetis\Persistence\ConnectionOptions;
 use Kinetis\Persistence\Contract\PostgresLink;
 use Kinetis\Persistence\Contract\PostgresTransaction;
+use Kinetis\Persistence\Contract\ReportsJsonDepth;
 use Kinetis\Persistence\Contract\SqlInstrumentation;
 use Kinetis\Persistence\Contract\SqlResult;
 use Kinetis\Persistence\Exception\ConnectionException;
@@ -60,7 +61,7 @@ use Throwable;
  * RoadRunner) where connections outlive requests; under PHP-FPM prefer
  * {@see PdoPgsqlClient} via SqlConnectionFactory's driver selection.
  */
-final class PgsqlAsyncClient implements PostgresLink
+final class PgsqlAsyncClient implements PostgresLink, ReportsJsonDepth
 {
     private const string ABORTED_MESSAGE = 'The Postgres connection was closed with a statement in flight; whether the server ran it is unknown';
 
@@ -190,6 +191,13 @@ final class PgsqlAsyncClient implements PostgresLink
             $sql,
             fn (PgsqlAsyncConnection $connection): SqlResult => $this->executeOn($connection, $query),
         );
+    }
+
+    /** PostgreSQL stores deeper JSON than json_decode() reads back, so the decoder's limit is the link's. */
+    #[\Override]
+    public function jsonDepth(): int
+    {
+        return JsonDepth::DECODER;
     }
 
     #[\Override]
